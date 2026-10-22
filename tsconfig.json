@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "compilerOptions": { "skipLibCheck": true },
+  "include": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/providers" },
+    { "path": "./packages/tools" },
+    { "path": "./packages/store" },
+    { "path": "./packages/skills" },
+    { "path": "./packages/cli" }
+  ]
+}

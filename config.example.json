@@ -1,0 +1,72 @@
+{
+  "defaultModel": "deepseek-chat",
+  "providers": {
+    "deepseek": {
+      "type": "deepseek",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "models": [
+        "deepseek-chat"
+      ],
+      "maxRetries": 2,
+      "timeoutMs": 120000
+    },
+    "local": {
+      "type": "openai-compatible",
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "apiKeyEnv": "LOCAL_API_KEY",
+      "models": [
+        "local-model"
+      ],
+      "maxRetries": 0,
+      "timeoutMs": 180000
+    },
+    "mock": {
+      "type": "mock",
+      "models": [
+        "mock-1"
+      ]
+    }
+  },
+  "cwd": ".",
+  "readOnly": false,
+  "maxSteps": 12,
+  "timeoutMs": 300000,
+  "maxTotalTokens": 0,
+  "policy": {
+    "approval": "high"
+  },
+  "tools": {
+    "allow": [
+      "read_file",
+      "list_files",
+      "search_text",
+      "write_file",
+      "apply_patch",
+      "exec",
+      "memory_search"
+    ],
+    "maxCallsPerTask": 50,
+    "exec": {
+      "defaultTimeoutMs": 30000,
+      "maxOutputBytes": 100000,
+      "envAllow": []
+    }
+  },
+  "context": {
+    "historyMessages": 30
+  },
+  "skills": {
+    "dirs": [],
+    "maxBytes": 262144,
+    "autoMatch": true
+  },
+  "memory": {
+    "enabled": true,
+    "dir": null
+  },
+  "logging": {
+    "level": "info",
+    "retentionDays": 14
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "agentx-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p packages/core/tsconfig.test.json && tsc -p packages/providers/tsconfig.test.json && tsc -p packages/tools/tsconfig.test.json && tsc -p packages/store/tsconfig.test.json && tsc -p packages/skills/tsconfig.test.json && tsc -p packages/cli/tsconfig.test.json && tsc -p tsconfig.tests.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "agentx": "node packages/cli/bin/agentx.js",
+    "test:gate": "node scripts/test-gate.mjs",
+    "verify": "tsc -b && pnpm typecheck && node scripts/test-gate.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0",
+    "@types/node": "^22.10.0"
+  }
+}

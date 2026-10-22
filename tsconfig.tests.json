@@ -1,0 +1,33 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "baseUrl": ".",
+    "paths": {
+      "@agentx/core": [
+        "./packages/core/src/index.ts"
+      ],
+      "@agentx/providers": [
+        "./packages/providers/src/index.ts"
+      ],
+      "@agentx/tools": [
+        "./packages/tools/src/index.ts"
+      ],
+      "@agentx/store": [
+        "./packages/store/src/index.ts"
+      ],
+      "@agentx/skills": [
+        "./packages/skills/src/index.ts"
+      ],
+      "@agentx/cli": [
+        "./packages/cli/src/index.ts"
+      ]
+    },
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext"
+  },
+  "include": [
+    "tests/**/*.ts"
+  ]
+}
