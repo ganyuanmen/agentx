@@ -4,3 +4,5 @@ dist-release/
 *.tsbuildinfo
 *.log
 .DS_Store
+local_cli_agent_framework_dev_spec.md 
+docs/
