@@ -584,6 +584,8 @@ function prepare(options: {
     const loaded = loadConfig({
       home: ctx.env.AGENTX_HOME,
       env: ctx.env,
+      // agent 专属 config.json：覆盖全局默认值，但被 env 与下面的 CLI overrides 覆盖。
+      ...(options.agent?.hasConfigFile ? { extraFiles: [options.agent.configFile] } : {}),
       overrides: {
         ...(model ? { defaultModel: model } : {}),
         ...(options.cwd ? { cwd: options.cwd } : {}),
@@ -1289,6 +1291,8 @@ export async function executeAgentShow(name: string, options: AgentListOptions, 
         dir: agent.dir,
         soulFile: agent.soulFile,
         soulBytes: agent.soulBytes,
+        hasConfigFile: agent.hasConfigFile,
+        configFile: agent.configFile,
         soul: agent.soul,
       })}\n`,
     );
@@ -1300,6 +1304,9 @@ export async function executeAgentShow(name: string, options: AgentListOptions, 
   ctx.stdout.write(`skills:      ${agent.skillWhitelist ? agent.skillWhitelist.join(", ") : "(all in agent dir)"}\n`);
   ctx.stdout.write(`dir:         ${agent.dir}\n`);
   ctx.stdout.write(`soul.md:     ${agent.soulFile} (${agent.soulBytes} bytes)\n`);
+  ctx.stdout.write(
+    `config:      ${agent.hasConfigFile ? agent.configFile : "(none — inherits global config)"}\n`,
+  );
   ctx.stdout.write(`\n--- SOUL ---\n${agent.soul}\n`);
   return EXIT.OK;
 }

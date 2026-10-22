@@ -130,6 +130,30 @@ describe("agentx agent list / show (AC2)", () => {
     expect(parsed.soul).toContain("ALPHA_SOUL");
   });
 
+  it("show reports the agent config file", async () => {
+    seedAgent("cfg");
+    writeFileSync(path.join(home, "agents", "cfg", "config.json"), "{}", "utf8");
+    const r = await run(["agent", "show", "cfg"], { AGENTX_HOME: home });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("config:");
+    expect(r.stdout).toContain("config.json");
+  });
+
+  it("show says so when there is no agent config", async () => {
+    seedAgent("nocfg");
+    const r = await run(["agent", "show", "nocfg"], { AGENTX_HOME: home });
+    expect(r.stdout).toContain("inherits global config");
+  });
+
+  it("show --json exposes configFile/hasConfigFile", async () => {
+    seedAgent("cfg");
+    writeFileSync(path.join(home, "agents", "cfg", "config.json"), "{}", "utf8");
+    const r = await run(["agent", "show", "cfg", "--json"], { AGENTX_HOME: home });
+    const parsed = JSON.parse(r.stdout.trim());
+    expect(parsed.hasConfigFile).toBe(true);
+    expect(parsed.configFile).toContain("config.json");
+  });
+
   it("list is empty-safe", async () => {
     const r = await run(["agent", "list"], { AGENTX_HOME: home });
     expect(r.code).toBe(0);
@@ -200,6 +224,79 @@ describe("skill whitelist (AC7)", () => {
     const r = await run(["picky", "run", "hi"], { AGENTX_HOME: home, AGENTX_MOCK_SCRIPT: mockScript() });
     // 能走到模型调用（这里没有 key，所以预期是 provider 失败而不是白名单失败）
     expect(r.stderr).not.toContain("unknown skill");
+  });
+});
+
+describe("agent config.json (SPEC-008)", () => {
+  it("init writes a config.json next to SOUL.md", async () => {
+    await run(["agent", "init", "cfg"], { AGENTX_HOME: home });
+    const cfgPath = path.join(home, "agents", "cfg", "config.json");
+    expect(existsSync(cfgPath)).toBe(true);
+    expect(() => JSON.parse(readFileSync(cfgPath, "utf8"))).not.toThrow();
+  });
+
+  it("the agent config overrides the global config", async () => {
+    seedAgent("cfg");
+    // 全局指向一个未注册的 provider，agent config 指向另一个未注册的；
+    // 准备阶段报错里会点出实际尝试的那个，能直接观察优先级。
+    writeFileSync(
+      path.join(home, "config.json"),
+      JSON.stringify({ defaultModel: "globalghost:g-1", policy: { approval: "none" } }),
+      "utf8",
+    );
+    writeFileSync(
+      path.join(home, "agents", "cfg", "config.json"),
+      JSON.stringify({ defaultModel: "agentghost:a-1" }),
+      "utf8",
+    );
+    const r = await run(["cfg", "run", "hi"], { AGENTX_HOME: home });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("agentghost:a-1");
+    expect(r.stderr).not.toContain("globalghost:g-1");
+  });
+
+  it("--model on the command line beats the agent config", async () => {
+    seedAgent("cfg");
+    writeFileSync(
+      path.join(home, "config.json"),
+      JSON.stringify({ defaultModel: "globalghost:g-1", policy: { approval: "none" } }),
+      "utf8",
+    );
+    writeFileSync(path.join(home, "agents", "cfg", "config.json"), JSON.stringify({ defaultModel: "agentghost:a-1" }), "utf8");
+    const r = await run(["cfg", "run", "hi", "--model", "clighost:c-1"], { AGENTX_HOME: home });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("clighost:c-1");
+    expect(r.stderr).not.toContain("agentghost:a-1");
+  });
+
+  it("a malformed agent config fails loudly and names the file", async () => {
+    seedAgent("cfg");
+    writeFileSync(path.join(home, "agents", "cfg", "config.json"), "{ broken", "utf8");
+    const r = await run(["cfg", "run", "hi"], { AGENTX_HOME: home });
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain("config.json");
+  });
+
+  it("an unknown key in the agent config is rejected, not ignored", async () => {
+    seedAgent("cfg");
+    writeFileSync(path.join(home, "agents", "cfg", "config.json"), '{"maxStepz":3}', "utf8");
+    const r = await run(["cfg", "run", "hi"], { AGENTX_HOME: home });
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toMatch(/maxStepz|CONFIG_INVALID/i);
+  });
+
+  it("an agent without config.json still works (inherits global)", async () => {
+    seedAgent("plain");
+    // 用未注册的 provider：准备阶段就会报 unknown model，并打上模型名，
+    // 这比「provider 存在但网络不通」更容易观察到实际用的是哪个 model。
+    writeFileSync(
+      path.join(home, "config.json"),
+      JSON.stringify({ defaultModel: "ghost:ghost-1", policy: { approval: "none" } }),
+      "utf8",
+    );
+    const r = await run(["plain", "run", "hi"], { AGENTX_HOME: home });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("ghost:ghost-1");
   });
 });
 

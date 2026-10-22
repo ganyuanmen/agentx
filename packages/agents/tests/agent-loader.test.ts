@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, symlinkSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, symlinkSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
@@ -239,6 +239,32 @@ describe("scanAgents", () => {
   });
 });
 
+describe("agent config.json", () => {
+  it("reports hasConfigFile=false and the expected path when absent", () => {
+    const dir = writeAgent("demo", goodSoul);
+    const def = parseAgentDir(dir, "demo");
+    if ("code" in def) throw new Error(def.message);
+    expect(def.hasConfigFile).toBe(false);
+    expect(def.configFile).toBe(path.join(dir, "config.json"));
+  });
+
+  it("detects a config.json next to SOUL.md", () => {
+    const dir = writeAgent("demo", goodSoul);
+    writeFileSync(path.join(dir, "config.json"), '{"maxSteps":3}', "utf8");
+    const def = parseAgentDir(dir, "demo");
+    if ("code" in def) throw new Error(def.message);
+    expect(def.hasConfigFile).toBe(true);
+  });
+
+  it("does not validate config.json contents (that is loadConfig's job)", () => {
+    // 解析阶段只负责「有没有」，内容合法性交给 Zod：两处校验会给出不一致的错误信息
+    const dir = writeAgent("demo", goodSoul);
+    writeFileSync(path.join(dir, "config.json"), "{ broken", "utf8");
+    const def = parseAgentDir(dir, "demo");
+    expect("code" in def).toBe(false);
+  });
+});
+
 describe("scaffoldAgent (AC1)", () => {
   it("creates SOUL.md and a skills dir", () => {
     const r = scaffoldAgent({ agentsRoot: root, name: "demo" });
@@ -248,6 +274,25 @@ describe("scaffoldAgent (AC1)", () => {
     // 生成的模板必须自己就能解析通过
     const def = parseAgentDir(path.join(root, "demo"), "demo");
     expect("code" in def).toBe(false);
+  });
+
+  it("creates config.json alongside SOUL.md", () => {
+    const r = scaffoldAgent({ agentsRoot: root, name: "demo" });
+    expect(r.ok).toBe(true);
+    const cfgPath = path.join(root, "demo", "config.json");
+    expect(existsSync(cfgPath)).toBe(true);
+    // 必须是合法 JSON，否则 agent 一启动就炸
+    const parsed = JSON.parse(readFileSync(cfgPath, "utf8"));
+    expect(parsed).toHaveProperty("defaultModel");
+  });
+
+  it("--force does not clobber a user-tuned config.json", () => {
+    scaffoldAgent({ agentsRoot: root, name: "demo" });
+    const cfgPath = path.join(root, "demo", "config.json");
+    writeFileSync(cfgPath, '{"maxSteps":3}', "utf8");
+    scaffoldAgent({ agentsRoot: root, name: "demo", force: true });
+    // 配置文件是用户精调过的模型/策略，误覆盖代价比 SOUL 更大
+    expect(readFileSync(cfgPath, "utf8")).toBe('{"maxSteps":3}');
   });
 
   it("refuses to overwrite an existing SOUL.md without --force", () => {

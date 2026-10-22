@@ -127,6 +127,14 @@ export interface LoadConfigOptions {
   /** 命令行覆盖（优先级最高）。 */
   overrides?: DeepPartial<Config>;
   env?: NodeJS.ProcessEnv;
+  /**
+   * 追加的配置文件（如 agent 目录下的 config.json），按顺序在 `<home>/config.json`
+   * **之后**合并，因此可以覆盖全局配置，但仍会被环境变量与命令行覆盖。
+   *
+   * 为什么放在 env 之前：环境变量与 CLI 参数是「这一次运行」的显式意图，
+   * 而 agent 配置文件属于「这个 agent 的默认设定」，不该压过用户当次指定。
+   */
+  extraFiles?: string[];
 }
 
 export type DeepPartial<T> = {
@@ -263,6 +271,33 @@ export function loadDotEnv(home: string, base: NodeJS.ProcessEnv = process.env):
   return { env: { ...parsed, ...base }, path: dotenvPath, warnings };
 }
 
+/**
+ * 读一个 JSON 配置文件并做基础形态校验。
+ * 错误信息带上具体路径，否则多份配置（全局 + agent）合并出错时很难定位是哪一份。
+ */
+function readConfigFile(filePath: string): Record<string, unknown> {
+  let text: string;
+  try {
+    text = readFileSync(filePath, "utf8");
+  } catch (err) {
+    throw new ConfigInvalidError(`cannot read config file ${filePath}: ${(err as Error).message}`, {
+      cause: err,
+    });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new ConfigInvalidError(`config file ${filePath} is not valid JSON: ${(err as Error).message}`, {
+      cause: err,
+    });
+  }
+  if (!isPlainObject(parsed)) {
+    throw new ConfigInvalidError(`config file ${filePath} must contain a JSON object`);
+  }
+  return parsed;
+}
+
 export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   const baseEnv = options.env ?? process.env;
   const home = options.home ? path.resolve(options.home) : resolveHome(baseEnv);
@@ -275,27 +310,15 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
 
   const filePath = path.join(home, "config.json");
   if (existsSync(filePath)) {
-    let text: string;
-    try {
-      text = readFileSync(filePath, "utf8");
-    } catch (err) {
-      throw new ConfigInvalidError(`cannot read config file ${filePath}: ${(err as Error).message}`, {
-        cause: err,
-      });
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch (err) {
-      throw new ConfigInvalidError(`config file ${filePath} is not valid JSON: ${(err as Error).message}`, {
-        cause: err,
-      });
-    }
-    if (!isPlainObject(parsed)) {
-      throw new ConfigInvalidError(`config file ${filePath} must contain a JSON object`);
-    }
-    raw = parsed;
+    raw = readConfigFile(filePath);
     sources.push(filePath);
+  }
+
+  // agent 级配置：在全局之后合并，可覆盖全局，但会被 env / CLI 覆盖。
+  for (const extra of options.extraFiles ?? []) {
+    if (!existsSync(extra)) continue;
+    raw = deepMerge(raw, readConfigFile(extra));
+    sources.push(extra);
   }
 
   const errors: string[] = [];

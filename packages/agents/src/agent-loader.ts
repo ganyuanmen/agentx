@@ -31,6 +31,15 @@ export interface AgentDefinition {
   soulFile: string;
   /** 该 agent 的 skills 目录（即使不存在也返回路径，便于提示）。 */
   skillsDir: string;
+  /**
+   * 该 agent 的配置文件路径（`<dir>/config.json`，可能不存在）。
+   *
+   * 存在时在全局 `~/.agentx/config.json` 之后合并，用于「这个 agent 的默认设定」
+   * ——模型、策略、工具白名单等。字段与全局配置文件完全相同。
+   */
+  configFile: string;
+  /** config.json 是否实际存在。 */
+  hasConfigFile: boolean;
   /** SOUL.md 的字节数（用于体积提示）。 */
   soulBytes: number;
 }
@@ -177,6 +186,9 @@ export function parseAgentDir(dir: string, expectedName: string, maxBytes = DEFA
     ? whitelistRaw.map((s) => s.trim()).filter((s) => s !== "")
     : undefined;
 
+  const configFile = path.join(dir, "config.json");
+  const hasConfigFile = existsSync(configFile);
+
   const def: AgentDefinition = {
     name,
     description: description.trim(),
@@ -184,6 +196,8 @@ export function parseAgentDir(dir: string, expectedName: string, maxBytes = DEFA
     dir,
     soulFile,
     skillsDir,
+    configFile,
+    hasConfigFile,
     soulBytes: bytes,
   };
   if (model && model.trim() !== "") def.model = model.trim();

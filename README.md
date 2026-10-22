@@ -203,8 +203,35 @@ An agent lives in `~/.agentx/agents/<name>/`:
 ```
 ~/.agentx/agents/reviewer/
 ├── SOUL.md            # required: YAML frontmatter + body
+├── config.json        # optional: overrides the global config for this agent
 └── skills/            # optional: one SKILL.md per subdirectory
 ```
+
+`config.json` uses **exactly the same fields as `~/.agentx/config.json`** — write only what you
+want to change:
+
+```json
+{
+  "defaultModel": "deepseek:deepseek-chat",
+  "policy": { "approval": "high" },
+  "tools": { "allow": ["read_file", "list_files", "search_text"] },
+  "maxSteps": 8
+}
+```
+
+Precedence, highest first:
+
+| Level | Source |
+|---|---|
+| 1 | command line (`--model`, `--read-only`, …) |
+| 2 | environment variables (`AGENTX_MODEL`, …) |
+| 3 | **`<agent>/config.json`** |
+| 4 | `~/.agentx/config.json` |
+| 5 | built-in defaults |
+
+`agent init` writes a working `config.json` for you. `--force` never overwrites it — only
+`SOUL.md` — because a tuned model/policy set is costlier to lose than the scaffold text.
+`agentx agent show <name>` reports which config file is in effect.
 
 `SOUL.md` frontmatter:
 

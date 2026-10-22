@@ -20,9 +20,32 @@ export interface ScaffoldResult {
   /** 实际创建/覆盖的路径。 */
   soulFile?: string;
   skillsDir?: string;
+  /** agent 级配置文件路径（本次创建或既有）。 */
+  configFile?: string;
   /** ok=false 时的原因。 */
   reason?: "EEXIST";
   message?: string;
+}
+
+/**
+ * agent 的 config.json 模板。
+ *
+ * 故意不写注释：JSON 不支持注释，写进去就是非法 JSON。字段含义见
+ * docs/configuration.md，字段集合与全局 config.json 完全一致。
+ * 只写需要覆盖的字段即可，其余自动继承全局配置。
+ */
+export function configTemplate(): string {
+  return `${JSON.stringify(
+    {
+      defaultModel: "deepseek:deepseek-chat",
+      policy: { approval: "high" },
+      tools: { allow: ["read_file", "list_files", "search_text", "write_file", "apply_patch"] },
+      maxSteps: 12,
+      context: { historyMessages: 30 },
+    },
+    null,
+    2,
+  )}\n`;
 }
 
 export function soulTemplate(name: string): string {
@@ -96,10 +119,16 @@ export function scaffoldAgent(options: ScaffoldOptions): ScaffoldResult {
 
   mkdirSync(dir, { recursive: true });
   writeFileSync(soulFile, soulTemplate(options.name), "utf8");
+
+  // config.json 与 SOUL.md 分开保护：force 只覆盖 SOUL，配置文件是用户精调过的
+  // 模型/策略，误覆盖代价更大，所以仅在缺失时写。
+  const configFile = path.join(dir, "config.json");
+  if (!existsSync(configFile)) writeFileSync(configFile, configTemplate(), "utf8");
+
   mkdirSync(exampleDir, { recursive: true });
   const exampleSkill = path.join(exampleDir, "SKILL.md");
   // force 时不覆盖用户可能已改过的示例技能，只在缺失时补。
   if (!existsSync(exampleSkill)) writeFileSync(exampleSkill, exampleSkillTemplate(), "utf8");
 
-  return { ok: true, soulFile, skillsDir };
+  return { ok: true, soulFile, skillsDir, configFile };
 }
