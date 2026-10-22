@@ -110,7 +110,24 @@ function toOpenAiMessages(messages: ModelRequest["messages"]): Array<Record<stri
   });
 }
 
-/** OpenAI 兼容的 Chat Completions provider（含超时、重试与错误分类）。 */
+/**
+ * 去掉模型引用里的 `providerId:` 前缀。
+ *
+ * agentx 内部统一用 `provider:model` 引用模型（便于跨 provider 解析），
+ * 但 OpenAI 兼容 API 的 `model` 字段只接受裸模型名。把 `deepseek:deepseek-chat`
+ * 整个发出去，DeepSeek 会直接回 HTTP 400 —— 而错误信息里并不提示是名字的问题。
+ *
+ * 只剥第一个冒号之前的部分，且仅当前缀不含空白；模型 id 本身理论上可以含冒号。
+ */
+export function stripProviderPrefix(model: string): string {
+  const idx = model.indexOf(":");
+  if (idx <= 0) return model;
+  const prefix = model.slice(0, idx);
+  if (/\s/.test(prefix)) return model;
+  const rest = model.slice(idx + 1);
+  return rest === "" ? model : rest;
+}
+
 export class OpenAiCompatibleProvider implements ModelProvider {
   readonly id: string;
   readonly models: ModelInfo[];
@@ -149,7 +166,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     if (signal?.aborted) throw new TaskCancelledError();
 
     const body = {
-      model: req.model,
+      model: stripProviderPrefix(req.model),
       messages: toOpenAiMessages(req.messages),
       tools: req.tools.map((t) => ({
         type: "function",
