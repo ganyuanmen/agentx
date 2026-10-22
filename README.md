@@ -187,6 +187,48 @@ The status bar is printed after every turn, between two rules:
 All numbers come from the task record and the SQLite session — nothing is estimated. In a
 non-TTY or `--json` run the status bar is not printed at all, so piping stays clean.
 
+### `agentx agent <name> chat` / `agentx <name> chat`
+
+Run as a **named agent**: a persistent identity (`SOUL.md`) plus its own skills.
+
+```bash
+agentx agent init reviewer        # scaffold ~/.agentx/agents/reviewer/
+$EDITOR ~/.agentx/agents/reviewer/SOUL.md
+agentx reviewer chat              # equivalent to: agentx agent chat reviewer
+agentx reviewer run "review src/cli.ts"
+```
+
+An agent lives in `~/.agentx/agents/<name>/`:
+
+```
+~/.agentx/agents/reviewer/
+├── SOUL.md            # required: YAML frontmatter + body
+└── skills/            # optional: one SKILL.md per subdirectory
+```
+
+`SOUL.md` frontmatter:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | yes | Must equal the directory name |
+| `description` | yes | One-line summary for `agent list` |
+| `model` | no | Overrides the default model for this agent |
+| `skills` | no | Whitelist; when present only these skills load |
+
+The body is the agent's identity and is injected **first** in the system prompt, ahead of the
+framework description and the security rules — so a SOUL cannot weaken the safety constraints.
+
+| Command | Meaning |
+|---|---|
+| `agentx agent list` | name, skill count, description; broken definitions show `INVALID` |
+| `agentx agent show <name>` | full definition including the SOUL body |
+| `agentx agent init <name>` | scaffold; refuses to overwrite without `--force` |
+| `agentx agent chat <name>` | chat as the agent (also `agentx <name> chat`) |
+| `agentx agent run <name> <prompt>` | one-shot task as the agent (also `agentx <name> run`) |
+
+Agent names are restricted to letters, digits, `.`, `_` and `-`; path separators are rejected.
+Extra agent directories can be added with `agents.dirs` in the config.
+
 Slash commands: `/help` `/new` `/sessions` `/tools` `/exit` (also `/quit`, or Ctrl+D).
 
 The interface adapts to where it runs, so scripting is never polluted (see

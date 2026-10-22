@@ -18,8 +18,23 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.20.5)
 
+  packages/agents:
+    dependencies:
+      '@agentx/core':
+        specifier: workspace:*
+        version: link:../core
+      '@agentx/skills':
+        specifier: workspace:*
+        version: link:../skills
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+
   packages/cli:
     dependencies:
+      '@agentx/agents':
+        specifier: workspace:*
+        version: link:../agents
       '@agentx/core':
         specifier: workspace:*
         version: link:../core

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -p packages/core/tsconfig.test.json && tsc -p packages/providers/tsconfig.test.json && tsc -p packages/tools/tsconfig.test.json && tsc -p packages/store/tsconfig.test.json && tsc -p packages/skills/tsconfig.test.json && tsc -p packages/cli/tsconfig.test.json && tsc -p tsconfig.tests.json",
+    "typecheck": "tsc -p packages/core/tsconfig.test.json && tsc -p packages/providers/tsconfig.test.json && tsc -p packages/tools/tsconfig.test.json && tsc -p packages/store/tsconfig.test.json && tsc -p packages/skills/tsconfig.test.json && tsc -p packages/agents/tsconfig.test.json && tsc -p packages/cli/tsconfig.test.json && tsc -p tsconfig.tests.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "agentx": "node packages/cli/bin/agentx.js",

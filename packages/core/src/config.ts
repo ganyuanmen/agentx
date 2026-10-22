@@ -93,6 +93,15 @@ export const configSchema = z
       })
       .strict()
       .default({ dirs: [], maxBytes: 262144, autoMatch: true }),
+    agents: z
+      .object({
+        /** 额外的 agent 定义目录（相对路径按 cwd 解析）；排在 $AGENTX_HOME/agents 之后。 */
+        dirs: z.array(z.string()).default([]),
+        /** SOUL.md 体积上限（字节）。 */
+        maxBytes: z.number().int().positive().default(262144),
+      })
+      .strict()
+      .default({ dirs: [], maxBytes: 262144 }),
     memory: z
       .object({
         enabled: z.boolean().default(true),

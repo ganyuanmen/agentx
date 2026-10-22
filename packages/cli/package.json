@@ -23,7 +23,8 @@
     "@agentx/providers": "workspace:*",
     "@agentx/tools": "workspace:*",
     "@agentx/store": "workspace:*",
-    "@agentx/skills": "workspace:*"
+    "@agentx/skills": "workspace:*",
+    "@agentx/agents": "workspace:*"
   },
   "bin": {
     "agentx": "bin/agentx.js"

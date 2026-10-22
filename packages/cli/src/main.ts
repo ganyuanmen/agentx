@@ -18,6 +18,8 @@ import {
   type ProviderConfig,
 } from "@agentx/core";
 import { migrate, openDatabase, SCHEMA_VERSION, type SqliteDatabase } from "@agentx/store";
+import { isValidAgentName, type AgentDefinition } from "@agentx/agents";
+import { initAgent, listAgents, resolveAgentByName } from "./agent-commands.js";
 import { createDefaultTools } from "@agentx/tools";
 
 import { Command, Option } from "commander";
@@ -70,6 +72,8 @@ export interface RunOptions {
   excludeTools?: string;
   /** --skill（可重复）。 */
   skill?: string[];
+  /** `agentx agent <name> run` 注入的定义；普通 run 不存在。 */
+  agent?: AgentDefinition;
 }
 
 export interface ChatOptions {
@@ -84,6 +88,8 @@ export interface ChatOptions {
   readOnly?: boolean;
   excludeTools?: string;
   skill?: string[];
+  /** `agentx agent <name> chat` 注入的定义；普通 chat 不存在。 */
+  agent?: AgentDefinition;
 }
 
 export interface SessionsListOptions {
@@ -326,6 +332,101 @@ export function buildProgram(ctx: RunContext): Command {
       process.exitCode = await executeSkillsList(options, ctx);
     });
 
+  // ---------- agent（SPEC-008） ----------
+
+  const agentCmd = program
+    .command("agent")
+    .description("manage and run named agents (SOUL.md + skills)")
+    .exitOverride((err) => {
+      if (err.code === "commander.helpDisplayed") return;
+      throw new UsageError(err.message);
+    });
+
+  agentCmd
+    .command("list")
+    .description("list available agents")
+    .option("--json", "print a JSON array")
+    .option("--verbose", "verbose logging (debug level)")
+    .action(async (options: AgentListOptions) => {
+      process.exitCode = await executeAgentList(options, ctx);
+    });
+
+  agentCmd
+    .command("show")
+    .description("show an agent definition including its SOUL")
+    .argument("<name>", "agent name")
+    .option("--json", "print the definition as JSON")
+    .option("--verbose", "verbose logging (debug level)")
+    .action(async (name: string, options: AgentListOptions) => {
+      process.exitCode = await executeAgentShow(name, options, ctx);
+    });
+
+  agentCmd
+    .command("init")
+    .description("scaffold a new agent (SOUL.md + example skill)")
+    .argument("<name>", "agent name")
+    .option("--force", "overwrite an existing SOUL.md")
+    .option("--verbose", "verbose logging (debug level)")
+    .action(async (name: string, options: { force?: boolean; verbose?: boolean }) => {
+      process.exitCode = await executeAgentInit(name, options, ctx);
+    });
+
+  // `agentx agent <name> chat|run ...` —— 动态名字 + 子命令。
+  // commander 无法直接声明「任意名字」，所以显式注册两个目标命令，再由它们消费 <name>。
+  const agentChat = agentCmd
+    .command("chat <name>")
+    .description("chat as the named agent")
+    .option("--model <model>", "model reference (overrides the agent's model)")
+    .option("--session <id>", "session id to continue")
+    .option("--cwd <dir>", "working directory")
+    .option("--max-steps <n>", "maximum agent loop steps")
+    .option("--timeout <ms>", "task timeout in milliseconds")
+    .option("--json", "print one JSON line per turn")
+    .option("--yes", "auto-approve tools that require approval")
+    .option("--read-only", "disallow tools with side effects")
+    .option("--exclude-tools <names>", "comma-separated tool names to disable")
+    .option("--skill <name>", "load a skill by name (repeatable)", collect)
+    .option("--verbose", "verbose logging (debug level)");
+
+  agentChat.action(async (name: string, options: ChatOptions) => {
+    const prepared = withAgent(name, ctx, options);
+    if ("exitCode" in prepared) {
+      process.exitCode = prepared.exitCode;
+      return;
+    }
+    process.exitCode = await executeChat(prepared.options, ctx);
+  });
+
+  const agentRun = agentCmd
+    .command("run <name> <prompt>")
+    .description("run one task as the named agent")
+    .option("--model <model>", "model reference (overrides the agent's model)")
+    .option("--session <id>", "session id to continue")
+    .option("--cwd <dir>", "working directory")
+    .option("--max-steps <n>", "maximum agent loop steps")
+    .option("--timeout <ms>", "task timeout in milliseconds")
+    .option("--json", "print a single JSON result line")
+    .option("--yes", "auto-approve tools that require approval")
+    .option("--read-only", "disallow tools with side effects")
+    .option("--exclude-tools <names>", "comma-separated tool names to disable")
+    .option("--skill <name>", "load a skill by name (repeatable)", collect)
+    .option("--verbose", "verbose logging (debug level)");
+
+  agentRun.action(async (name: string, prompt: string, options: RunOptions) => {
+    const prepared = withAgent(name, ctx, options);
+    if ("exitCode" in prepared) {
+      process.exitCode = prepared.exitCode;
+      return;
+    }
+    process.exitCode = await executeRun(prompt, prepared.options, ctx);
+  });
+
+  // 注意：父命令 **不能** 注册 .action()。一旦注册，commander 会把
+  // `agent reviewer chat` 的第一个位置参数当成父命令参数而报
+  // "too many arguments for 'agent'"，下面两个子命令就路由不到。
+  // 想让 `agentx agent <name>`（漏了 chat/run）给出提示，交给子命令的
+  // 未知命令处理（commander 默认输出 help + 非零码）。
+
   // ---------- M4：config / models / doctor ----------
 
   const tools = program
@@ -440,6 +541,11 @@ interface PreparedRuntime {
   maxSteps: number | undefined;
   timeoutMs: number | undefined;
   readOnly: boolean;
+  /**
+   * 本次运行绑定的 agent 定义（`agentx agent <name> ...` 时存在）。
+   * 非 agent 运行时为 undefined，行为与改动前逐字节一致。
+   */
+  agent?: AgentDefinition;
 }
 
 class SetupFailure extends Error {
@@ -464,6 +570,8 @@ function prepare(options: {
   excludeTools?: string;
   maxSteps?: string;
   timeout?: string;
+  /** `agentx agent <name> ...` 传入的定义；缺省为普通运行。 */
+  agent?: AgentDefinition;
 }, ctx: RunContext, argv: string[] = [], approvalHooks?: Parameters<typeof createInteractiveApprover>[1]): PreparedRuntime {
   const inherited = inheritedOptions(ctx);
   const json = Boolean(options.json ?? inherited.json ?? false);
@@ -502,7 +610,7 @@ function prepare(options: {
     stderr: !json && level === "debug",
   });
 
-  const modelRef = options.model ?? config.defaultModel;
+  const modelRef = options.model ?? options.agent?.model ?? config.defaultModel;
   const mockScript = loadMockScriptFromEnv(ctx.env);
   const providers = buildProviders(config.providers, mockScript, mergedEnv);
   const resolved = providers.resolve(modelRef);
@@ -518,7 +626,13 @@ function prepare(options: {
 
   const store = createSqliteStoreBundle(home);
   const cwd = path.resolve(config.cwd);
-  const skillLoader = createSkillLoader(config, cwd, logger);
+  const skillLoader = createSkillLoader(
+    config,
+    cwd,
+    logger,
+    undefined,
+    options.agent ? [options.agent.skillsDir] : [],
+  );
   const interactive = options.yes ? true : ctx.interactive;
   const approval: Approver | undefined = options.yes
     ? yesApprover
@@ -540,6 +654,7 @@ function prepare(options: {
     maxSteps,
     timeoutMs,
     readOnly: Boolean(options.readOnly ?? config.readOnly),
+    ...(options.agent ? { agent: options.agent } : {}),
   };
 }
 
@@ -607,6 +722,7 @@ function makeRuntime(
     maxTotalTokens: config.maxTotalTokens,
     interactive: prep.interactive,
     skills,
+    ...(prep.agent?.soul ? { soul: prep.agent.soul } : {}),
     ...(prep.approval ? { approval: prep.approval } : {}),
   });
   // 包一层：把 loop 的 onToolCall 钩子转成 UI 事件（仅 chat 传入 onEvent 时启用）。
@@ -658,6 +774,21 @@ function printSetupFailure(err: unknown, ctx: RunContext): number {
   return EXIT.FAILURE;
 }
 
+/**
+ * 校验 agent 技能白名单里的名字是否都存在；返回错误消息或 undefined。
+ * chat 与 run 共用同一份检查，避免两处行为漂移。
+ */
+async function checkSkillWhitelist(prep: PreparedRuntime): Promise<string | undefined> {
+  if (!prep.agent?.skillWhitelist) return undefined;
+  const available = new Set((await prep.skillLoader.discover()).map((m) => m.name));
+  const missing = prep.agent.skillWhitelist.filter((n) => !available.has(n));
+  if (missing.length === 0) return undefined;
+  return (
+    `agent "${prep.agent.name}" references unknown skill(s): ${missing.join(", ")}` +
+    ` (available: ${Array.from(available).sort().join(", ") || "none"})`
+  );
+}
+
 /** 单次任务执行：run 命令与 chat 每轮共用。 */
 async function runTurn(
   prep: PreparedRuntime,
@@ -675,7 +806,14 @@ async function runTurn(
     explicit: (ctx as { skills?: string[] }).skills ?? [],
     query: prompt,
     autoMatch: config.skills.autoMatch,
+    ...(prep.agent?.skillWhitelist ? { whitelist: prep.agent.skillWhitelist } : {}),
   });
+  // E7：白名单里写了不存在的技能属于配置错误，必须报错而不是静默不加载——
+  // 静默会让用户以为技能生效了，却在一个「没有该技能」的 agent 上排查半天。
+  const whitelistProblem = await checkSkillWhitelist(prep);
+  if (whitelistProblem) {
+    throw new SetupFailure(whitelistProblem, EXIT.USAGE);
+  }
   const runtime = makeRuntime(prep, selection.skills, onEvent);
   if (prep.logger.debug) {
     prep.logger.debug("skills.selected", { skills: selection.metas.map((m) => m.name) });
@@ -817,6 +955,16 @@ export async function executeChat(options: ChatOptions, ctx: RunContext): Promis
     return printSetupFailure(err, ctx);
   }
   (ctx as { skills?: string[] }).skills = options.skill ?? [];
+
+  // 配置级错误必须在进入 REPL 之前失败。runTurn 里的同类检查是单轮失败、
+  // 不退出进程（REPL 设计如此），但「白名单引用不存在的技能」不是会话内可恢复的错误：
+  // 每一轮都会失败，让用户对着一个空转的 REPL 更糟。
+  const whitelistProblem = await checkSkillWhitelist(prep);
+  if (whitelistProblem) {
+    ctx.stderr.write(`agentx: ${whitelistProblem}\n`);
+    prep.store.close();
+    return EXIT.USAGE;
+  }
 
   const input = ctx.stdin ?? process.stdin;
   const wantTty = Boolean((input as { isTTY?: boolean }).isTTY);
@@ -1081,6 +1229,112 @@ export async function executeChat(options: ChatOptions, ctx: RunContext): Promis
     ctx.stdout.write(`\n${ui.badge("muted", `session ${sessionId.slice(0, 8)} · ${turns} turn(s) · resume with --session ${sessionId}`)}\n`);
   }
   return turns === 0 ? EXIT.OK : lastExitCode;
+}
+
+// ---------- agent（SPEC-008） ----------
+
+export interface AgentListOptions {
+  json?: boolean;
+  verbose?: boolean;
+}
+
+/** `agentx agent list`：列出可用 agent；损坏项显示 INVALID 但不影响退出码。 */
+export async function executeAgentList(options: AgentListOptions, ctx: RunContext): Promise<number> {
+  const json = Boolean(options.json ?? inheritedOptions(ctx).json ?? false);
+  const rows = listAgents(ctx.env);
+  if (json) {
+    ctx.stdout.write(`${JSON.stringify(rows)}\n`);
+    return EXIT.OK;
+  }
+  if (rows.length === 0) {
+    ctx.stdout.write(`no agents found (create one with: agentx agent init <name>)\n`);
+    return EXIT.OK;
+  }
+  const ui = new Ui(
+    {
+      stdout: { write: () => true, isTTY: false },
+      stderr: ctx.stderr as unknown as UiStreams["stderr"],
+      env: { ...ctx.env, NO_COLOR: "1" },
+    },
+    { forceMode: "plain" },
+  );
+  const header = ui.kv("NAME", ui.kv("SKILLS", "DESCRIPTION", 6), 22);
+  ctx.stdout.write(`${header}\n`);
+  for (const row of rows) {
+    if (!row.valid) {
+      ctx.stdout.write(`${ui.kv(row.name, ui.kv("INVALID", row.reason ?? "", 6), 22)}\n`);
+      continue;
+    }
+    ctx.stdout.write(`${ui.kv(row.name, ui.kv(String(row.skills), row.description, 6), 22)}\n`);
+  }
+  return EXIT.OK;
+}
+
+/** `agentx agent show <name>`：打印定义详情（含 SOUL 正文）。 */
+export async function executeAgentShow(name: string, options: AgentListOptions, ctx: RunContext): Promise<number> {
+  const json = Boolean(options.json ?? inheritedOptions(ctx).json ?? false);
+  const resolved = resolveAgentByName(name, ctx.env);
+  if ("error" in resolved) {
+    ctx.stderr.write(`agentx: ${resolved.error}\n`);
+    return resolved.exitCode;
+  }
+  const agent = resolved.agent;
+  if (json) {
+    ctx.stdout.write(
+      `${JSON.stringify({
+        name: agent.name,
+        description: agent.description,
+        ...(agent.model ? { model: agent.model } : {}),
+        ...(agent.skillWhitelist ? { skills: agent.skillWhitelist } : {}),
+        dir: agent.dir,
+        soulFile: agent.soulFile,
+        soulBytes: agent.soulBytes,
+        soul: agent.soul,
+      })}\n`,
+    );
+    return EXIT.OK;
+  }
+  ctx.stdout.write(`name:        ${agent.name}\n`);
+  ctx.stdout.write(`description: ${agent.description}\n`);
+  ctx.stdout.write(`model:       ${agent.model ?? "(inherit default)"}\n`);
+  ctx.stdout.write(`skills:      ${agent.skillWhitelist ? agent.skillWhitelist.join(", ") : "(all in agent dir)"}\n`);
+  ctx.stdout.write(`dir:         ${agent.dir}\n`);
+  ctx.stdout.write(`soul.md:     ${agent.soulFile} (${agent.soulBytes} bytes)\n`);
+  ctx.stdout.write(`\n--- SOUL ---\n${agent.soul}\n`);
+  return EXIT.OK;
+}
+
+/** `agentx agent init <name>`：生成 SOUL.md 与 skills/ 脚手架。 */
+export async function executeAgentInit(
+  name: string,
+  options: { force?: boolean; verbose?: boolean },
+  ctx: RunContext,
+): Promise<number> {
+  const outcome = initAgent(name, ctx.env, Boolean(options.force));
+  if (!outcome.ok) {
+    ctx.stderr.write(`agentx: ${outcome.message}\n`);
+    return EXIT.USAGE;
+  }
+  ctx.stdout.write(`${outcome.message}\n`);
+  ctx.stdout.write(`edit it, then run: agentx agent ${name} chat\n`);
+  return EXIT.OK;
+}
+
+/**
+ * 把 agent 定义补进 options 后交给主实现。
+ * 找不到 agent 时不进入 prepare（避免先建 SQLite 再报错）。
+ */
+function withAgent<T extends { agent?: AgentDefinition }>(
+  name: string,
+  ctx: RunContext,
+  options: T,
+): { options: T } | { exitCode: number } {
+  const resolved = resolveAgentByName(name, ctx.env);
+  if ("error" in resolved) {
+    ctx.stderr.write(`agentx: ${resolved.error}\n`);
+    return { exitCode: resolved.exitCode };
+  }
+  return { options: { ...options, agent: resolved.agent } };
 }
 
 // ---------- sessions ----------
@@ -1750,6 +2004,36 @@ function argvModel(argv: string[]): string | undefined {
   return inline ? inline.slice("--model=".length) : undefined;
 }
 
+/**
+ * 把 `agentx <agent-name> chat ...` 重写成 `agentx agent chat <agent-name> ...`。
+ *
+ * 为什么要重写 argv 而不是给 commander 注册动态子命令：commander 无法声明
+ * 「任意名字」作为子命令，只能穷举。重写 argv 可以保留 commander 的全部解析能力
+ * （选项、`--` 分隔、错误提示），比手写一层解析器可靠得多。
+ *
+ * 安全边界（都会被原样放行，绝不改写）：
+ *   - argv[0] 是已注册的顶层命令 → 不是 agent，直接返回。
+ *   - argv[0] 以 `-` 开头（`--help` / `--version` / `--json`）→ 全局选项，放行。
+ *   - argv[0] 不是合法 agent 名（含 `/`、`..` 等）→ 放行，让 commander 报未知命令。
+ *   - 没有第二个参数，或第二个参数不是 chat/run → 放行（`agentx foo` 仍报未知命令）。
+ *
+ * 只有「合法名字 + 紧跟 chat/run」这一种形状会被重写，因此不会影响现有任何命令。
+ */
+export function rewriteAgentShorthand(argv: string[], knownCommands: readonly string[]): string[] {
+  const first = argv[0];
+  if (first === undefined) return argv;
+  // 全局选项（--json / --version / -h）原样交给 commander。
+  if (first.startsWith("-")) return argv;
+  if (knownCommands.includes(first)) return argv;
+  if (!isValidAgentName(first)) return argv;
+
+  const second = argv[1];
+  if (second !== "chat" && second !== "run") return argv;
+
+  // agent chat/run 的选项与顶层 chat/run 同名同义，直接平移即可。
+  return ["agent", second, first, ...argv.slice(2)];
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const ctx: RunContext = {
     stdout: process.stdout,
@@ -1758,8 +2042,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     interactive: Boolean(process.stdin.isTTY),
   };
   const program = buildProgram(ctx);
+  const knownCommands = program.commands.map((c) => c.name());
+  const effectiveArgv = rewriteAgentShorthand(argv, knownCommands);
   try {
-    await program.parseAsync(argv, { from: "user" });
+    await program.parseAsync(effectiveArgv, { from: "user" });
   } catch (err) {
     if (err instanceof UsageError) {
       ctx.stderr.write(`${err.message.trim()}\n`);

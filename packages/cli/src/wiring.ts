@@ -205,6 +205,8 @@ export interface LoopRunOptions {
   interactive: boolean;
   /** 已选定技能正文（CLI 每轮按需加载后传入）；未指定则不注入。 */
   skills?: LoadedSkill[];
+  /** agent 的 SOUL 正文；注入 system prompt 最前面，未指定则不注入。 */
+  soul?: string;
 }
 
 /** 组装 runAgent 依赖；与 AgentRuntime 配合使用。 */
@@ -229,6 +231,7 @@ export function createLoopRunner(
       readOnly: request.readOnly,
       historyLimit: options.historyLimit,
       skills: options.skills ?? [],
+      ...(options.soul ? { soul: options.soul } : {}),
     });
     const deps = {
       provider: options.provider,
@@ -360,25 +363,38 @@ export function createSkillLoader(
   cwd: string,
   logger?: Logger,
   repoRoot?: string,
+  /** 额外的技能目录（agent 专属 skills/）；排在配置目录之前，同名时优先。 */
+  extraDirs: string[] = [],
 ): SkillLoader {
+  const base = resolveSkillDirs(config, cwd, repoRoot);
+  const dirs = [...extraDirs.filter((d) => d !== ""), ...base];
   return new SkillLoader({
-    dirs: resolveSkillDirs(config, cwd, repoRoot),
+    dirs,
     maxBytes: config.skills.maxBytes,
     ...(logger ? { logger } : {}),
   });
 }
 
-/** 按需选出本轮要注入的技能：显式 --skill 优先，否则 autoMatch。 */
+/**
+ * 按需选出本轮要注入的技能：显式 --skill 优先，否则 autoMatch。
+ *
+ * `whitelist` 存在时只允许这些技能：白名单之外的技能一律不注入，
+ * 连 autoMatch 命中的也丢掉——这是 agent 作者用来收紧能力面的开关。
+ * 白名单里出现不存在的技能名属于配置错误，调用方（CLI）必须报错而不是静默忽略。
+ */
 export async function selectSkills(
   loader: SkillLoader,
-  options: { explicit?: readonly string[]; query?: string; autoMatch: boolean },
+  options: { explicit?: readonly string[]; query?: string; autoMatch: boolean; whitelist?: readonly string[] },
 ): Promise<{ metas: SkillMeta[]; skills: LoadedSkill[] }> {
-  const explicit = (options.explicit ?? []).filter((s) => s.trim() !== "");
-  const metas = explicit.length > 0
+  const whitelist = options.whitelist;
+  const allowed = (name: string): boolean => whitelist === undefined || whitelist.includes(name);
+  const explicit = (options.explicit ?? []).filter((s) => s.trim() !== "").filter(allowed);
+  const metas = (explicit.length > 0
     ? (await loader.discover()).filter((m) => explicit.includes(m.name))
     : options.autoMatch && options.query
       ? await loader.match(options.query)
-      : [];
+      : []
+  ).filter((m) => allowed(m.name));
   const skills = await loader.loadMany(metas.map((m) => m.name));
   return { metas, skills };
 }
