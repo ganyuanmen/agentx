@@ -59,10 +59,31 @@ pnpm agentx --help
 
 Optional: put it on your `PATH`.
 
+This repo is a **pnpm workspace**: every package is `private` and depends on its siblings via
+`workspace:*`, and `@agentx/cli` is not published to npm. That rules out the two obvious
+approaches — `pnpm --filter ... link --global` fails with `Unknown option: 'recursive'`
+(`pnpm link` accepts a single `<dir>`, never `--filter`), and linking the sub-package on its own
+fails with `ERR_PNPM_WORKSPACE_PKG_NOT_FOUND` because `workspace:*` cannot resolve outside the
+workspace root.
+
+Use one of these instead, from the repo root after `pnpm install && pnpm build`:
+
 ```bash
-pnpm --filter @agentx/cli link --global   # or: npm link packages/cli
-agentx --help
+# 1) No install at all — just run the entry point (most reliable)
+node packages/cli/bin/agentx.js --help
+pnpm agentx --help                      # same thing, via the root script
+
+# 2) A shell alias, keeps the working tree authoritative
+alias agentx='node /absolute/path/to/agentx/packages/cli/bin/agentx.js'
+
+# 3) Global `agentx` on PATH (npm resolves the workspace symlinks correctly)
+cd packages/cli && npm link            # undo with: npm unlink -g @agentx/cli
 ```
+
+Whichever you pick, `pnpm build` must have run first — `dist/` is not committed.
+
+If you only want a binary on another machine, do **not** clone and build: use the offline
+release tarball from `scripts/package-release.sh` instead (see `DEPLOY.md` inside it).
 
 ### First run
 
