@@ -537,6 +537,12 @@ interface PreparedRuntime {
   skillLoader: SkillLoader;
   interactive: boolean;
   approval: Approver | undefined;
+  /**
+   * 审批器是否为 `--yes` 的自动放行器。
+   * chat 需要用真正的交互审批器替换掉 prepare 阶段建的那个（它没有 readline 句柄），
+   * 但**不能**覆盖 `--yes`，否则 `--yes` 会退化成逐个询问。
+   */
+  approvalIsAutoApprove: boolean;
   excludeTools: string[];
   maxSteps: number | undefined;
   timeoutMs: number | undefined;
@@ -652,6 +658,7 @@ function prepare(options: {
     skillLoader,
     interactive,
     approval,
+    approvalIsAutoApprove: Boolean(options.yes),
     excludeTools: parseListOption(options.excludeTools),
     maxSteps,
     timeoutMs,
@@ -801,6 +808,11 @@ async function runTurn(
   onEvent?: (event: RuntimeEvent) => void,
   /** false 时由调用方（chat TUI）自行渲染结果，本函数不写 stdout。 */
   emit = true,
+  /**
+   * chat 传入：让审批提示复用 REPL 的 readline（否则会再建一个 readline 抢同一个
+   * stdin，用户按键被吞、进程看起来「卡住」），并在提示前后停/启 spinner。
+   */
+  approvalHooks?: Parameters<typeof createInteractiveApprover>[1],
 ): Promise<AgentResult> {
   const { config } = prep;
   const taskId = `task_${randomUUID()}`;
@@ -816,7 +828,12 @@ async function runTurn(
   if (whitelistProblem) {
     throw new SetupFailure(whitelistProblem, EXIT.USAGE);
   }
-  const runtime = makeRuntime(prep, selection.skills, onEvent);
+  // chat 场景：审批提示必须复用 REPL 的 readline，否则 createInteractiveApprover 会
+  // 再建一个 readline 绑同一个 stdin，两边抢输入导致「看起来卡死」。
+  const approval = approvalHooks && prep.interactive && !prep.approvalIsAutoApprove
+    ? createInteractiveApprover(ctx, approvalHooks)
+    : prep.approval;
+  const runtime = makeRuntime({ ...prep, ...(approval ? { approval } : {}) }, selection.skills, onEvent);
   if (prep.logger.debug) {
     prep.logger.debug("skills.selected", { skills: selection.metas.map((m) => m.name) });
   }
@@ -1128,7 +1145,21 @@ export async function executeChat(options: ChatOptions, ctx: RunContext): Promis
         ctx.stdout.write(`${rendered}\n`);
         ui.startSpinner("thinking");
         spinnerOn = true;
-      }, false);
+      }, false, {
+        // 复用 REPL 的 readline：审批器自己 createInterface 会多绑一次 stdin，
+        // 在真实终端下表现为按键丢失。
+        readline: rl,
+        // 真正的坑：spinner 每 120ms 往 stderr 写 "\r⠋ thinking\x1b[K"，
+        // 回车+清行会把刚写出的审批提示整行擦掉，用户看不见该按什么，
+        // 于是干等到审批器 10 分钟超时把空答案当拒绝。提示出现前必须停掉它。
+        beforePrompt: () => {
+          if (spinnerOn) {
+            ui.stopSpinner();
+            spinnerOn = false;
+          }
+        },
+        afterPrompt: () => {},
+      });
       if (spinnerOn) {
         ui.stopSpinner();
         spinnerOn = false;
