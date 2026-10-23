@@ -85,6 +85,12 @@ export interface AgentLoopDeps {
   maxToolCalls?: number;
   /** 累计 usage.totalTokens 上限；0 或缺省表示不限制。 */
   maxTotalTokens?: number;
+  /**
+   * 达到 maxSteps 后是否再补一次「仅总结、不给工具」的收尾轮。
+   * 缺省 true：用它把已完成的探索换成一段可读的结论，而不是直接丢弃。
+   * 收尾轮的模型调用不计入 steps，但计入 usage；它同样受 timeoutMs 约束。
+   */
+  finalizeOnMaxSteps?: boolean;
   /** 审批状态变更通知（Runtime 用于写 waiting_approval）。 */
   onApprovalStateChange?: (state: "waiting" | "resolved", req: ApprovalRequest) => void;
   /** 每一步模型调用前通知（Runtime 用于写 running 状态）。 */
@@ -108,6 +114,16 @@ export interface AgentLoopDeps {
 }
 
 const ZERO_USAGE: ModelUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+/**
+ * 达到步数上限后的收尾指令。工具在这一轮被禁用，
+ * 因此措辞必须明确「不要再请求工具、直接用已有信息作答」。
+ */
+const MAX_STEPS_FINALIZE_PROMPT =
+  "You have reached the step limit for this task and no further tool calls are available. " +
+  "Do not request any more tools. Using only the information already gathered above, " +
+  "answer the user's request now with your best conclusion: state what you found, " +
+  "what you could not determine, and what the next step would be. Answer directly, with no tool calls.";
 
 export function addUsage(a: ModelUsage, b?: ModelUsage): ModelUsage {
   if (!b) return { ...a };
@@ -243,6 +259,55 @@ export async function runAgent(
   };
 
   const elapsed = (): number => clock() - startedMs;
+
+  /**
+   * 达到 maxSteps 后的收尾轮：禁止调用工具，要求模型用已有信息作答。
+   * 返回最终文本；模型仍坚持调工具、或返回空文本时返回 undefined，
+   * 由调用方按 max_steps 失败处理。
+   */
+  const finalizeAfterMaxSteps = async (): Promise<string | undefined> => {
+    messages.push(userMessage(MAX_STEPS_FINALIZE_PROMPT));
+    const modelRequest = deps.contextBuilder.build(request, messages.slice());
+    logger.info("task.finalize_start", { taskId: request.taskId, maxSteps: request.maxSteps });
+    const modelStart = clock();
+    try {
+      const response = await withTimeout(
+        deps.provider.generate({ ...modelRequest, tools: [] }, { signal }),
+        request.timeoutMs > 0 ? request.timeoutMs - elapsed() : 0,
+        () => new TaskTimeoutError(`task exceeded timeout of ${request.timeoutMs}ms`),
+        signal,
+      );
+      usage = addUsage(usage, response.usage);
+      logger.info("task.finalize_end", {
+        taskId: request.taskId,
+        durationMs: clock() - modelStart,
+        responseType: response.type,
+        tokenUsage: response.usage ?? { ...ZERO_USAGE },
+      });
+      if (response.type !== "final") {
+        logger.warn("task.finalize_rejected", {
+          taskId: request.taskId,
+          reason: "model returned tool calls while tools were disabled",
+        });
+        return undefined;
+      }
+      const text = response.text?.trim();
+      if (!text) {
+        logger.warn("task.finalize_rejected", { taskId: request.taskId, reason: "empty text" });
+        return undefined;
+      }
+      messages.push(assistantMessage(text));
+      return text;
+    } catch (err) {
+      // 收尾轮本身失败（超时/取消/网络）不改变终止语义：仍按 max_steps 结束。
+      logger.warn("task.finalize_failed", {
+        taskId: request.taskId,
+        errorCode: err instanceof AgentxError ? err.code : undefined,
+        message: errorMessage(err),
+      });
+      return undefined;
+    }
+  };
 
   try {
     deps.onStart?.();
@@ -408,6 +473,12 @@ export async function runAgent(
     }
 
     // 规则 8：达到 maxSteps。
+    // 先给模型一次「仅总结」的收尾机会（不给工具），把已完成的探索转成可读结论；
+    // 拿不到可用答复时仍按 max_steps 失败，语义与终止原因保持不变。
+    if (deps.finalizeOnMaxSteps !== false) {
+      const summary = await finalizeAfterMaxSteps();
+      if (summary !== undefined) return finish("succeeded", "completed", summary);
+    }
     throw new MaxStepsExceededError(`max steps (${request.maxSteps}) exceeded`);
   } catch (err) {
     if (signal.aborted && !(err instanceof AgentxError && err.code === ErrorCode.TIMEOUT)) {

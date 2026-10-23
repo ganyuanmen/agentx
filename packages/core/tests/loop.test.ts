@@ -139,6 +139,50 @@ describe("AgentLoop", () => {
   it("E10 stops with MAX_STEPS_EXCEEDED at the step limit", async () => {
     const script: ModelResponse[] = Array.from({ length: 5 }, (_, i) => toolCall(`c${i}`, "echo_path", { path: "/p" }));
     const provider = new MockProvider({ script });
+    const { deps: d } = deps({ provider, finalizeOnMaxSteps: false });
+    const result = await runAgent(makeRequest({ maxSteps: 3 }), d);
+
+    expect(result.status).toBe("failed");
+    expect(result.errorCode).toBe(ErrorCode.MAX_STEPS_EXCEEDED);
+    expect(result.terminationReason).toBe("max_steps");
+    expect(result.steps).toBe(3);
+  });
+
+  it("E10a finalizes with a summary when the model answers in the wrap-up turn", async () => {
+    const script: ModelResponse[] = [
+      toolCall("c0", "echo_path", { path: "/a" }),
+      toolCall("c1", "echo_path", { path: "/b" }),
+      toolCall("c2", "echo_path", { path: "/c" }),
+      { type: "final", text: "Found three paths; nothing further resolved." },
+    ];
+    const provider = new MockProvider({ script });
+    const { deps: d } = deps({ provider });
+    const result = await runAgent(makeRequest({ maxSteps: 3 }), d);
+
+    // 步数上限仍然是硬上限：steps 不因收尾轮而增加。
+    expect(result.steps).toBe(3);
+    expect(result.status).toBe("succeeded");
+    expect(result.terminationReason).toBe("completed");
+    expect(result.finalText).toBe("Found three paths; nothing further resolved.");
+    expect(result.errorCode).toBeUndefined();
+
+    // 收尾轮必须是第 4 次模型调用，且工具被清空、追加了收尾指令。
+    expect(provider.calls).toHaveLength(4);
+    const finalizeCall = provider.calls[3] as { tools: unknown[]; messages: Array<{ role: string; content: string }> };
+    expect(finalizeCall.tools).toEqual([]);
+    const lastMessage = finalizeCall.messages[finalizeCall.messages.length - 1];
+    expect(lastMessage).toBeDefined();
+    expect(lastMessage?.role).toBe("user");
+    expect(lastMessage?.content).toContain("step limit");
+    expect(lastMessage?.content).toContain("Do not request any more tools");
+  });
+
+  it("E10b still fails with MAX_STEPS_EXCEEDED when the wrap-up turn returns tool calls", async () => {
+    // 放 6 条工具调用：3 步正常 + 收尾轮仍想调工具 -> 收尾被拒 -> 回到 max_steps 失败。
+    const script: ModelResponse[] = Array.from({ length: 6 }, (_, i) =>
+      toolCall(`c${i}`, "echo_path", { path: "/p" }),
+    );
+    const provider = new MockProvider({ script });
     const { deps: d } = deps({ provider });
     const result = await runAgent(makeRequest({ maxSteps: 3 }), d);
 
@@ -146,6 +190,55 @@ describe("AgentLoop", () => {
     expect(result.errorCode).toBe(ErrorCode.MAX_STEPS_EXCEEDED);
     expect(result.terminationReason).toBe("max_steps");
     expect(result.steps).toBe(3);
+    // 收尾轮被消费掉，但没有变成成功。
+    expect(provider.calls).toHaveLength(4);
+    expect(result.finalText).toBe("");
+  });
+
+  it("E10c treats an empty wrap-up answer as MAX_STEPS_EXCEEDED", async () => {
+    const script: ModelResponse[] = [
+      toolCall("c0", "echo_path", { path: "/a" }),
+      toolCall("c1", "echo_path", { path: "/b" }),
+      toolCall("c2", "echo_path", { path: "/c" }),
+      { type: "final", text: "   " },
+    ];
+    const provider = new MockProvider({ script });
+    const { deps: d } = deps({ provider });
+    const result = await runAgent(makeRequest({ maxSteps: 3 }), d);
+
+    expect(result.errorCode).toBe(ErrorCode.MAX_STEPS_EXCEEDED);
+    expect(result.status).toBe("failed");
+  });
+
+  it("E10d counts the wrap-up turn usage but keeps steps at the limit", async () => {
+    const script: ModelResponse[] = [
+      toolCall("c0", "echo_path", { path: "/a" }),
+      toolCall("c1", "echo_path", { path: "/b" }),
+      toolCall("c2", "echo_path", { path: "/c" }),
+      { type: "final", text: "summary", usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 } },
+    ];
+    const provider = new MockProvider({ script });
+    const { deps: d } = deps({ provider });
+    const result = await runAgent(makeRequest({ maxSteps: 3 }), d);
+
+    // 3 步 × 7 + 收尾轮 110 = 131
+    expect(result.usage.totalTokens).toBe(131);
+    expect(result.steps).toBe(3);
+  });
+
+  it("E10e finalizeOnMaxSteps=false skips the wrap-up turn entirely", async () => {
+    const script: ModelResponse[] = [
+      toolCall("c0", "echo_path", { path: "/a" }),
+      toolCall("c1", "echo_path", { path: "/b" }),
+      toolCall("c2", "echo_path", { path: "/c" }),
+      { type: "final", text: "should never be requested" },
+    ];
+    const provider = new MockProvider({ script });
+    const { deps: d } = deps({ provider, finalizeOnMaxSteps: false });
+    const result = await runAgent(makeRequest({ maxSteps: 3 }), d);
+
+    expect(result.errorCode).toBe(ErrorCode.MAX_STEPS_EXCEEDED);
+    expect(provider.calls).toHaveLength(3);
   });
 
   it("E11 marks the task timed_out when the deadline passes", async () => {
