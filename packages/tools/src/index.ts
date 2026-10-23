@@ -39,6 +39,15 @@ export {
 } from "./exec.js";
 export type { ExecInput, ExecToolOptions } from "./exec.js";
 
+export {
+  createDispatchAgentTool,
+  dispatchInputSchema,
+  DEFAULT_DISPATCH_TIMEOUT_MS,
+  MAX_DISPATCH_TIMEOUT_MS,
+  DISPATCH_DEPTH_ENV,
+} from "./dispatch.js";
+export type { DispatchInput, DispatchToolOptions } from "./dispatch.js";
+
 export { autoApprover, createPolicyEngine, summarizeToolCall } from "./policy.js";
 export type { ApprovalMode, PolicyEngineOptions } from "./policy.js";
 

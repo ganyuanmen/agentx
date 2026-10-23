@@ -8,6 +8,7 @@ import {
   writeFileTool,
 } from "./files.js";
 import { createExecTool, DEFAULT_EXEC_TIMEOUT_MS, DEFAULT_MAX_OUTPUT_BYTES } from "./exec.js";
+import { createDispatchAgentTool, type DispatchToolOptions } from "./dispatch.js";
 
 /** 精简的 JSON Schema 类型（工具参数只需要 object/array/基本类型）。 */
 export interface JsonSchema {
@@ -195,6 +196,8 @@ export interface DefaultToolsOptions {
   envAllow?: readonly string[];
   /** 提供时注册 memory_search 工具。 */
   memorySearch?: (query: string, limit?: number) => Promise<string[]>;
+  /** 提供时注册 dispatch_agent 工具（agent 间派发）。 */
+  dispatch?: boolean | DispatchToolOptions;
 }
 
 function createMemorySearchTool(
@@ -246,6 +249,10 @@ export function createDefaultTools(options: DefaultToolsOptions = {}): AgentTool
   ];
   if (options.memorySearch) {
     tools.push(createMemorySearchTool(options.memorySearch) as AgentTool);
+  }
+  if (options.dispatch) {
+    const opts = typeof options.dispatch === "object" ? options.dispatch : {};
+    tools.push(createDispatchAgentTool(opts) as AgentTool);
   }
   return tools;
 }

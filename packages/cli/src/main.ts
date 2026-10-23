@@ -642,6 +642,10 @@ function prepare(options: {
     options.agent ? [options.agent.skillsDir] : [],
   );
   const interactive = options.yes ? true : ctx.interactive;
+  // dispatch_agent 需要知道父进程有没有被授权自动放行：子进程没有 TTY，
+  // 拿不到交互审批，不把这份授权传下去的话它的 exec 必然 APPROVAL_REQUIRED 失败。
+  if (options.yes) process.env.AGENTX_DISPATCH_AUTO_APPROVE = "1";
+  else delete process.env.AGENTX_DISPATCH_AUTO_APPROVE;
   const approval: Approver | undefined = options.yes
     ? yesApprover
     : interactive
@@ -713,8 +717,10 @@ function makeRuntime(
   if (!resolved) throw new SetupFailure(`unknown model "${prep.modelRef}"`, EXIT.USAGE);
   const tools =
     prep.excludeTools.length === 0
-      ? registerTools(config, { ...memoryToolContext(prep) })
-      : registerTools(config, { ...memoryToolContext(prep) }).filter((t) => !prep.excludeTools.includes(t.name));
+      ? registerTools(config, { ...memoryToolContext(prep), ...dispatchOptions(prep) })
+      : registerTools(config, { ...memoryToolContext(prep), ...dispatchOptions(prep) }).filter(
+          (t) => !prep.excludeTools.includes(t.name),
+        );
   const policy = createPermissivePolicy({
     allow: config.tools.allow,
     approval: config.policy.approval,
@@ -762,6 +768,32 @@ function makeRuntime(
     taskStore: prep.store.taskStore,
     run: runWithEvents,
   });
+}
+
+/**
+ * dispatch_agent 的上下文：把父 agent 的审批器转成「子 agent 要执行工具时该不该放行」。
+ *
+ * 子 agent 没有 TTY，自己的审批器拿不到用户输入。它的请求沿 stderr 回到这里，
+ * 由父 agent 的审批器决定 —— 交互模式下就是弹给用户确认，`--yes` 时恒放行。
+ * 父 agent 没有审批器（非交互且未 --yes）时返回 undefined，
+ * dispatch 工具会据此让子 agent 直接在无审批模式下失败，而不是干等一个不会来的答案。
+ */
+function dispatchOptions(prep: PreparedRuntime): {
+  dispatch?: { approve?: (req: { toolName: string; summary: string }) => Promise<boolean> };
+} {
+  if (!prep.approval) return { dispatch: {} };
+  const approver = prep.approval;
+  return {
+    dispatch: {
+      approve: async ({ toolName, summary }) =>
+        approver({
+          toolName,
+          riskLevel: "high",
+          summary: summary === "" ? `Approve ${toolName} for the dispatched agent?` : summary,
+          input: {},
+        }),
+    },
+  };
 }
 
 function memoryToolContext(prep: PreparedRuntime): { memorySearch?: (q: string, limit?: number) => Promise<string[]> } {
@@ -2073,11 +2105,17 @@ export function rewriteAgentShorthand(argv: string[], knownCommands: readonly st
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  // 被 dispatch_agent 派发的子 agent：stdin/stdout 是父进程给的管道，没有 TTY。
+  // 若仍按 isTTY 判定，interactive 会是 false，任何需要审批的工具都直接
+  // APPROVAL_REQUIRED 失败（现象：dispatch_agent → failed，原因 exec 拿不到审批）。
+  // 审批机制本身只依赖流（提示写 stderr、答案从 stdin 读），不要求 TTY，
+  // 因此这里把交互模式打开，让审批请求沿管道转回父进程处理。
+  const dispatchedChild = process.env.AGENTX_DISPATCH_CHILD === "1";
   const ctx: RunContext = {
     stdout: process.stdout,
     stderr: process.stderr,
     env: process.env,
-    interactive: Boolean(process.stdin.isTTY),
+    interactive: Boolean(process.stdin.isTTY) || dispatchedChild,
   };
   const program = buildProgram(ctx);
   const knownCommands = program.commands.map((c) => c.name());

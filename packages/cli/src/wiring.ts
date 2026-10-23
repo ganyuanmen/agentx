@@ -117,6 +117,8 @@ export interface ToolRegistrationOptions {
   execTimeoutMs?: number;
   envAllow?: readonly string[];
   memorySearch?: (query: string, limit?: number) => Promise<string[]>;
+  /** dispatch_agent 的选项（含把子 agent 审批请求转给父 agent 的回调）。 */
+  dispatch?: { approve?: (req: { toolName: string; summary: string }) => Promise<boolean> };
 }
 
 export interface ToolRegistrationContext extends ToolRegistrationOptions {
@@ -139,6 +141,11 @@ export function registerTools(
     execTimeoutMs: ctx.execTimeoutMs ?? execCfg?.defaultTimeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS,
     envAllow: ctx.envAllow ?? execCfg?.envAllow ?? [],
     ...(memorySearch ? { memorySearch } : {}),
+    // agent 间派发：只有 tools.allow 里写了 dispatch_agent 才注册，
+    // 这样默认行为不变，是否给某个 agent 派发权仍然由白名单决定。
+    ...(config?.tools.allow.includes("dispatch_agent")
+      ? { dispatch: ctx.dispatch ?? true }
+      : {}),
   });
 }
 
