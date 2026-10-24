@@ -293,11 +293,12 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         let parsedArgs: unknown;
         try {
           parsedArgs = JSON.parse(text);
-        } catch (err) {
-          throw new ProviderBadResponseError(
-            `provider "${this.id}" returned tool_call "${name}" with invalid JSON arguments`,
-            { cause: err },
-          );
+        } catch {
+          // 模型偶尔会返回无法解析的 arguments（截断、多余转义、尾逗号）。
+          // 这里不再把整个任务打死在 provider 层：原样把文本交给工具 schema 校验，
+          // 由 loop 归类为 INVALID_TOOL_ARGS 并带出具体原因，错误语义与
+          // 「参数不合法」保持一致，而不是笼统的 PROVIDER_BAD_RESPONSE。
+          parsedArgs = text;
         }
         calls.push({
           id: raw.id ?? `call_${calls.length}`,

@@ -68,7 +68,11 @@ describe("OpenAiCompatibleProvider", () => {
     expect(res.calls[0]).toMatchObject({ id: "call_1", name: "read_file", arguments: { path: "a.txt" } });
   });
 
-  it("E24 rejects malformed tool-call arguments with PROVIDER_BAD_RESPONSE", async () => {
+  it("E24 passes malformed tool-call arguments through as raw text instead of failing the task", async () => {
+    // 背景：真实运行中子 agent 跑了 21 次工具调用后，模型某一步吐出坏 JSON，
+    // 整个任务连同前面 28 秒的工作一起报废。坏 JSON 是「模型写错参数」，
+    // 与参数校验失败同类，不该在 provider 层就把任务打死。
+    // 现在 provider 原样透传原始字符串，由工具 schema 校验去报 INVALID_TOOL_ARGS。
     const fetchImpl = vi.fn(async () =>
       jsonResponse(200, {
         choices: [
@@ -81,9 +85,12 @@ describe("OpenAiCompatibleProvider", () => {
         ],
       }),
     );
-    await expect(provider(fetchImpl as unknown as typeof globalThis.fetch).generate(REQ)).rejects.toMatchObject({
-      code: ErrorCode.PROVIDER_BAD_RESPONSE,
-    });
+    const res = await provider(fetchImpl as unknown as typeof globalThis.fetch).generate(REQ);
+    expect(res.type).toBe("tool_calls");
+    const call = (res as { calls: Array<{ name: string; arguments: unknown }> }).calls[0];
+    expect(call?.name).toBe("read_file");
+    // 原始文本被保留（而不是解析成对象、也不是抛错）
+    expect(call?.arguments).toBe("{not json");
   });
 
   it("E21 does not retry a 401 and never leaks the key in the error", async () => {

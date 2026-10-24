@@ -125,6 +125,21 @@ describe("AgentLoop", () => {
     expect(executed).toHaveLength(0);
   });
 
+  it("E24a turns a raw unparseable arguments string into INVALID_TOOL_ARGS", async () => {
+    // 串起 provider 与 loop：provider 把坏 JSON 原样透传（字符串），
+    // loop 的 schema 校验据此判 INVALID_TOOL_ARGS，而不是在 provider 层炸掉。
+    const provider = new MockProvider({
+      script: [{ type: "tool_calls", calls: [{ id: "c1", name: "echo_path", arguments: "{not json" as unknown as Record<string, unknown> }] }],
+    });
+    const { deps: d, executed } = deps({ provider });
+    const result = await runAgent(makeRequest(), d);
+
+    expect(result.status).toBe("failed");
+    expect(result.errorCode).toBe(ErrorCode.INVALID_TOOL_ARGS);
+    // 参数没通过校验，工具不得被执行
+    expect(executed).toHaveLength(0);
+  });
+
   it("E09 rejects invalid arguments without executing the tool", async () => {
     const provider = new MockProvider({ script: [toolCall("c1", "echo_path", { wrong: 1 })] });
     const { deps: d, executed } = deps({ provider });
