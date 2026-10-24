@@ -1130,6 +1130,41 @@ export async function executeChat(options: ChatOptions, ctx: RunContext): Promis
       );
       return;
     }
+    if (line === "/reload") {
+      // 重新读配置。chat 只在启动时 prepare 一次，之后每轮复用同一份 prep，
+      // 因此改 ~/.agentx/config.json 对已运行的会话无效 —— 这个命令补上热重载。
+      // 只影响配置派生的东西（maxSteps / timeoutMs / maxCallsPerTask / 审批策略 /
+      // 工具白名单 / 模型解析）；已开始的任务、会话里已有的历史不受影响。
+      try {
+        // 顺序很重要：同一个数据库文件只能有一个活动连接。先关旧库再建新库，
+        // 避免两条连接同时指向同一个 WAL 文件而互相阻塞。
+        // 配置先做一次只读校验，写坏了就直接报错，不会把当前会话连库一起关掉。
+        loadConfig({
+          home: ctx.env.AGENTX_HOME,
+          env: ctx.env,
+          ...(options.agent?.hasConfigFile ? { extraFiles: [options.agent.configFile] } : {}),
+        });
+        const previous = prep;
+        previous.store.close();
+        prep = prepare(options, ctx, []);
+        if (tty) rl.setPrompt(promptFor(sessionId, ui));
+        const approval = prep.config.policy.approval;
+        ctx.stdout.write(
+          ui.panel("Reloaded", [
+            ui.kv("model", prep.modelRef, 16),
+            ui.kv("maxSteps", String(prep.maxSteps ?? prep.config.maxSteps), 16),
+            ui.kv("timeoutMs", String(prep.timeoutMs ?? prep.config.timeoutMs), 16),
+            ui.kv("maxCallsPerTask", String(prep.config.tools.maxCallsPerTask), 16),
+            ui.kv("approval", approval, 16),
+            ui.kv("tools.allow", String(prep.config.tools.allow.length), 16),
+          ]),
+        );
+      } catch (err) {
+        // 配置改坏了也不能把整个会话搞挂：保留旧 prep 继续可用。
+        ctx.stderr.write(`agentx: reload failed, keeping previous config: ${(err as Error).message}\n`);
+      }
+      return;
+    }
     if (line === "/help" || line === "/?") {
       ctx.stdout.write(
         ui.panel("Help", [
@@ -1137,6 +1172,7 @@ export async function executeChat(options: ChatOptions, ctx: RunContext): Promis
           ui.kv("/new", "start a new session", 12),
           ui.kv("/sessions", "list recent sessions", 12),
           ui.kv("/tools", "list tools and risk levels", 12),
+          ui.kv("/reload", "re-read config.json without restarting", 12),
           ui.kv("/exit", "leave agentx (/quit, Ctrl+D)", 12),
           "",
           ui.kv("Tips", "Ctrl+C cancels the running task; twice force-exits", 12, "gray"),
@@ -1145,7 +1181,7 @@ export async function executeChat(options: ChatOptions, ctx: RunContext): Promis
       return;
     }
     if (line.startsWith("/")) {
-      ctx.stderr.write(`agentx: unknown command ${line} (try /new /sessions /exit)\n`);
+      ctx.stderr.write(`agentx: unknown command ${line} (try /new /sessions /reload /exit)\n`);
       return;
     }
     // TTY 下 readline 已经把「提示符 + 输入」回显在屏幕上了，再画一遍 ❯ 就是重复。
