@@ -125,29 +125,56 @@ describe("AgentLoop", () => {
     expect(executed).toHaveLength(0);
   });
 
-  it("E24a turns a raw unparseable arguments string into INVALID_TOOL_ARGS", async () => {
+  it("E24a turns a raw unparseable arguments string into a correctable error", async () => {
     // 串起 provider 与 loop：provider 把坏 JSON 原样透传（字符串），
-    // loop 的 schema 校验据此判 INVALID_TOOL_ARGS，而不是在 provider 层炸掉。
+    // loop 的 schema 校验判为参数错误并回填，模型修正后任务继续。
     const provider = new MockProvider({
-      script: [{ type: "tool_calls", calls: [{ id: "c1", name: "echo_path", arguments: "{not json" as unknown as Record<string, unknown> }] }],
+      script: [
+        { type: "tool_calls", calls: [{ id: "c1", name: "echo_path", arguments: "{not json" as unknown as Record<string, unknown> }] },
+        toolCall("c2", "echo_path", { path: "/fixed" }),
+        { type: "final", text: "recovered" },
+      ],
     });
     const { deps: d, executed } = deps({ provider });
     const result = await runAgent(makeRequest(), d);
 
-    expect(result.status).toBe("failed");
-    expect(result.errorCode).toBe(ErrorCode.INVALID_TOOL_ARGS);
-    // 参数没通过校验，工具不得被执行
-    expect(executed).toHaveLength(0);
+    expect(result.status).toBe("succeeded");
+    expect(result.finalText).toBe("recovered");
+    // 坏参数那一次没执行工具，纠正后才执行
+    expect(executed).toHaveLength(1);
   });
 
-  it("E09 rejects invalid arguments without executing the tool", async () => {
-    const provider = new MockProvider({ script: [toolCall("c1", "echo_path", { wrong: 1 })] });
+  it("E09 feeds invalid arguments back and lets the model correct them", async () => {
+    // 新行为：参数写错不再直接终止任务（一次真实运行里 tester 跑了 14 步、
+    // 60 秒，只因 write_file 参数类型错就全丢），而是回填 ok:false 让它改。
+    const provider = new MockProvider({
+      script: [
+        toolCall("c1", "echo_path", { wrong: 1 }),
+        toolCall("c2", "echo_path", { path: "/fixed" }),
+        { type: "final", text: "recovered" },
+      ],
+    });
     const { deps: d, executed } = deps({ provider });
     const result = await runAgent(makeRequest(), d);
+
+    // 第一次参数错没有执行工具，纠正后才执行
+    expect(result.status).toBe("succeeded");
+    expect(result.finalText).toBe("recovered");
+    expect(executed).toHaveLength(1);
+    expect(executed[0]).toEqual({ path: "/fixed" });
+  });
+
+  it("E09b gives up with INVALID_TOOL_ARGS after too many bad attempts", async () => {
+    // 上限保护：模型一直写错参数时不能无限空转。
+    const bad = () => toolCall(`c${Math.random()}`, "echo_path", { wrong: 1 });
+    const provider = new MockProvider({ script: [bad(), bad(), bad(), bad(), bad(), bad()] });
+    const { deps: d, executed } = deps({ provider });
+    const result = await runAgent(makeRequest({ maxSteps: 10 }), d);
 
     expect(result.status).toBe("failed");
     expect(result.errorCode).toBe(ErrorCode.INVALID_TOOL_ARGS);
     expect(result.errorSummary).toContain("path");
+    // 参数始终没通过校验，工具一次都不该执行
     expect(executed).toHaveLength(0);
   });
 

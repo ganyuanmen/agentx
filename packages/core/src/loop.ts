@@ -86,6 +86,13 @@ export interface AgentLoopDeps {
   /** 累计 usage.totalTokens 上限；0 或缺省表示不限制。 */
   maxTotalTokens?: number;
   /**
+   * 允许模型自纠多少次「工具参数写错」。
+   * 参数校验失败时先把错误回填让它重试，超过这个次数才终止任务 ——
+   * 既避免一步写错就丢掉整个任务的进展，也避免模型在同一处反复空转。
+   * 缺省 3。
+   */
+  maxInvalidToolArgs?: number;
+  /**
    * 达到 maxSteps 后是否再补一次「仅总结、不给工具」的收尾轮。
    * 缺省 true：用它把已完成的探索换成一段可读的结论，而不是直接丢弃。
    * 收尾轮的模型调用不计入 steps，但计入 usage；它同样受 timeoutMs 约束。
@@ -218,6 +225,9 @@ export async function runAgent(
   let usage: ModelUsage = { ...ZERO_USAGE };
   let steps = 0;
   let toolCalls = 0;
+  /** 已发生多少次「参数校验失败但被允许自纠」。 */
+  let invalidArgCount = 0;
+  const maxInvalidArgs = deps.maxInvalidToolArgs ?? 3;
 
   const finish = (
     status: AgentResult["status"],
@@ -386,12 +396,40 @@ export async function runAgent(
         const tool = deps.tools.get(call.name);
         if (!tool) throw new UnknownToolError(call.name);
 
-        // Zod 参数校验 -> 终止（规则 7）。
+        // Zod 参数校验：失败不再立刻终止，而是把错误回填给模型让它自己改。
+        // 背景：一次真实运行里 tester 已经跑了 14 步、60 秒，只因 write_file 参数
+        // 写错类型就整个任务作废。参数写错属于「模型这一步犯了错」，和工具执行
+        // 失败同类，都该给一次纠正机会；否则前面积累的工作全部白费。
+        // 但必须设上限：模型可能反复写错同一处，无上限会让它空转到步数耗尽。
         let input: unknown;
         try {
           input = tool.inputSchema.parse(call.arguments ?? {});
         } catch (err) {
-          if (isZodError(err)) throw new InvalidToolArgsError(call.name, formatZodIssues(err));
+          if (isZodError(err)) {
+            invalidArgCount++;
+            const detail = formatZodIssues(err);
+            if (invalidArgCount > maxInvalidArgs) {
+              throw new InvalidToolArgsError(call.name, detail);
+            }
+            logger.warn("tool.invalid_args", {
+              taskId: request.taskId,
+              step: steps,
+              name: call.name,
+              detail,
+              attempt: invalidArgCount,
+            });
+            // 回填一条失败结果，措辞要能指导模型改对参数。
+            messages.push(
+              toolResultMessage(call.id, {
+                ok: false,
+                content: "",
+                error:
+                  `INVALID_TOOL_ARGS: ${call.name} got invalid arguments — ${detail}. ` +
+                  `Fix the arguments to match the tool schema and call it again.`,
+              }),
+            );
+            continue;
+          }
           throw err;
         }
 

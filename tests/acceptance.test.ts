@@ -529,19 +529,25 @@ describe("E05/E09 exec argument safety end to end", () => {
 // ---------------------------------------------------------------- E24 (E2E through loop)
 
 describe("E24 provider bad response through the CLI", () => {
-  it("E24 malformed tool-call JSON arguments fail the task with PROVIDER_BAD_RESPONSE", async () => {
+  it("E24 malformed tool-call JSON arguments are corrected instead of killing the task", async () => {
     const home = freshHome("e24");
     // mock 脚本在 CLI 层被 JSON 化，无法表达"坏 JSON 字符串"，因此走坏响应结构 + 坏 arguments 两种形状
     const script = [
       { type: "tool_calls", calls: [{ id: "c1", name: "read_file", arguments: "{not json" }] },
-      { type: "final", text: "should not reach" },
+      { type: "final", text: "recovered after bad args" },
     ];
     const out = await run(["run", "bad args", "--model", "mock", "--json"], { home, script });
-    const payload = JSON.parse(out.stdout.trim()) as { status: string; errorCode?: string; terminationReason: string };
-    // 字符串型 arguments 无法通过 zod 校验 -> INVALID_TOOL_ARGS；无论如何不能静默成功
-    expect(payload.status).not.toBe("succeeded");
-    expect(["INVALID_TOOL_ARGS", "PROVIDER_BAD_RESPONSE"]).toContain(payload.errorCode);
-    expect(out.code).toBe(1);
+    const payload = JSON.parse(out.stdout.trim()) as {
+      status: string;
+      errorCode?: string;
+      terminationReason: string;
+      finalText: string;
+    };
+    // 新行为：坏参数回填给模型自纠，模型改用 final 收尾 -> 任务成功。
+    // 旧行为是整任务以 PROVIDER_BAD_RESPONSE 报废，前面所有工作丢失。
+    expect(payload.status).toBe("succeeded");
+    expect(payload.finalText).toBe("recovered after bad args");
+    expect(out.code).toBe(0);
   });
 });
 
