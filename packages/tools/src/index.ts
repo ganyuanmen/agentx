@@ -54,10 +54,18 @@ export type { ApprovalMode, PolicyEngineOptions } from "./policy.js";
 export {
   createDefaultTools,
   createToolRegistry,
+  memoryAddInputSchema,
   memorySearchInputSchema,
   zodToJsonSchema,
 } from "./registry.js";
-export type { DefaultToolsOptions, JsonSchema, MemorySearchInput, ToolRegistry } from "./registry.js";
+export type {
+  DefaultToolsOptions,
+  JsonSchema,
+  MemoryAddHook,
+  MemoryAddInput,
+  MemorySearchInput,
+  ToolRegistry,
+} from "./registry.js";
 
 export { createToolExecutor } from "./executor.js";
 export type { ToolExecutorOptions } from "./executor.js";

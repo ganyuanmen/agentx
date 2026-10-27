@@ -34,6 +34,7 @@ import {
   createSkillLoader,
   createSqliteStoreBundle,
   loadMockScriptFromEnv,
+  memoryAddHook,
   memorySearchHook,
   registerTools,
   selectSkills,
@@ -41,6 +42,7 @@ import {
   type ProviderResolver,
   type SqliteStoreBundle,
 } from "./wiring.js";
+import type { MemoryAddHook } from "@agentx/tools";
 import { AgentRuntime } from "@agentx/core";
 import { formatSkillsTable, type SkillLoader } from "@agentx/skills";
 
@@ -796,10 +798,17 @@ function dispatchOptions(prep: PreparedRuntime): {
   };
 }
 
-function memoryToolContext(prep: PreparedRuntime): { memorySearch?: (q: string, limit?: number) => Promise<string[]> } {
+function memoryToolContext(prep: PreparedRuntime): {
+  memorySearch?: (q: string, limit?: number) => Promise<string[]>;
+  memoryAdd?: MemoryAddHook;
+} {
   const memory = createMemory(prep.config, prep.home);
-  const hook = memorySearchHook(memory);
-  return hook ? { memorySearch: hook } : {};
+  const searchHook = memorySearchHook(memory);
+  const addHook = memoryAddHook(memory);
+  return {
+    ...(searchHook ? { memorySearch: searchHook } : {}),
+    ...(addHook ? { memoryAdd: addHook } : {}),
+  };
 }
 
 function printSetupFailure(err: unknown, ctx: RunContext): number {
@@ -1692,7 +1701,12 @@ export async function executeToolsList(options: ToolsListOptions, ctx: RunContex
     const { config } = loaded;
     const approval = config.policy.approval;
     const allow = new Set(config.tools.allow);
-    const rows: ToolRow[] = createDefaultTools().map((tool) => ({
+    // memory_* 只在 memory.enabled 时注册；传入空桩钩子只为让列表反映真实可用性，
+    // 真正执行时用的是 memoryToolContext() 里由 store 提供的钩子。
+    const memoryEnabled = config.memory.enabled;
+    const rows: ToolRow[] = createDefaultTools({
+      ...(memoryEnabled ? { memorySearch: async () => [], memoryAdd: async () => "" } : {}),
+    }).map((tool) => ({
       name: tool.name,
       riskLevel: tool.riskLevel,
       readOnly: tool.readOnly,
@@ -1996,15 +2010,18 @@ export async function executeDoctor(ctx: RunContext, options: DoctorOptions = {}
     add("tools", "WARN", "skipped: configuration could not be loaded");
   } else {
     try {
-      const registered = createDefaultTools();
+      const registered = createDefaultTools(
+        config.memory.enabled ? { memorySearch: async () => [], memoryAdd: async () => "" } : {},
+      );
       const names = registered.map((t) => t.name);
       // memory_search 仅在 memory.enabled 且记忆目录可用时注册，属于允许的缺省差异。
       const allow = config.tools.allow;
-      const allowNotRegistered = allow.filter((n) => !names.includes(n) && n !== "memory_search");
+      // memory_* 只在提供记忆钩子时注册，缺省不算配置不一致。
+      const optionalTools = ["memory_search", "memory_add"];
+      const allowNotRegistered = allow.filter((n) => !names.includes(n) && !optionalTools.includes(n));
       const registeredNotAllowed = names.filter((n) => !allow.includes(n));
       const base = `${registered.length} tool(s) registered: ${names.join(", ")}; tools.allow has ${allow.length} entr(ies)`;
-      // memory_search 只在提供记忆钩子时注册；不把它算作配置不一致，但要说明缺席原因。
-      const optionalMissing = allow.filter((n) => !names.includes(n) && n === "memory_search");
+      const optionalMissing = allow.filter((n) => !names.includes(n) && optionalTools.includes(n));
       const hint =
         optionalMissing.length > 0
           ? `; ${optionalMissing.join(", ")} is optional and not registered (no memory hook configured)`

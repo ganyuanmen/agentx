@@ -189,6 +189,24 @@ export const memorySearchInputSchema = z.object({
 
 export type MemorySearchInput = z.infer<typeof memorySearchInputSchema>;
 
+export const memoryAddInputSchema = z.object({
+  /** 一条简短事实/偏好，不是任务日志（store 侧另有 4000 字符上限）。 */
+  text: z.string().min(1),
+  /** 来源标记，便于日后追溯（如 "session:ses_x"、"audit:forum"）。 */
+  source: z.string().min(1).optional(),
+  tags: z.array(z.string()).optional(),
+});
+
+export type MemoryAddInput = z.infer<typeof memoryAddInputSchema>;
+
+/** memory_add 的写入钩子：返回给模型的简短确认信息。 */
+export type MemoryAddHook = (input: {
+  text: string;
+  source?: string;
+  tags?: string[];
+  taskId?: string;
+}) => Promise<string>;
+
 export interface DefaultToolsOptions {
   maxOutputBytes?: number;
   execTimeoutMs?: number;
@@ -196,6 +214,8 @@ export interface DefaultToolsOptions {
   envAllow?: readonly string[];
   /** 提供时注册 memory_search 工具。 */
   memorySearch?: (query: string, limit?: number) => Promise<string[]>;
+  /** 提供时注册 memory_add 工具（写入长期记忆）。 */
+  memoryAdd?: MemoryAddHook;
   /** 提供时注册 dispatch_agent 工具（agent 间派发）。 */
   dispatch?: boolean | DispatchToolOptions;
 }
@@ -229,8 +249,41 @@ function createMemorySearchTool(
 }
 
 /**
+ * memory_add：把一条**简短事实/偏好**写入长期记忆库。
+ * 定位是「记住结论」，不是记流水账——长文本由 store 侧的 MAX_MEMORY_ENTRY_CHARS 拒绝。
+ */
+function createMemoryAddTool(add: MemoryAddHook): AgentTool<MemoryAddInput> {
+  return {
+    name: "memory_add",
+    description:
+      "Save one short, durable fact or preference to local Markdown memory so future sessions can recall it. " +
+      "Use for stable conventions, user preferences and reusable checklists — not for task logs, code dumps or transient state.",
+    inputSchema: memoryAddInputSchema,
+    riskLevel: "low",
+    readOnly: false,
+    async execute(input, ctx) {
+      try {
+        const summary = await add({
+          text: input.text,
+          ...(input.source !== undefined ? { source: input.source } : {}),
+          ...(input.tags !== undefined ? { tags: input.tags } : {}),
+          taskId: ctx.taskId,
+        });
+        return { ok: true, content: summary, metadata: { taskId: ctx.taskId } };
+      } catch (err) {
+        return {
+          ok: false,
+          content: "",
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  };
+}
+
+/**
  * 默认工具集（PM_SPEC §5.5）：read_file / list_files / search_text /
- * write_file / apply_patch / exec（+ memory_search，仅当提供 memorySearch）。
+ * write_file / apply_patch / exec（+ memory_search / memory_add，仅当提供对应钩子）。
  */
 export function createDefaultTools(options: DefaultToolsOptions = {}): AgentTool[] {
   const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
@@ -249,6 +302,9 @@ export function createDefaultTools(options: DefaultToolsOptions = {}): AgentTool
   ];
   if (options.memorySearch) {
     tools.push(createMemorySearchTool(options.memorySearch) as AgentTool);
+  }
+  if (options.memoryAdd) {
+    tools.push(createMemoryAddTool(options.memoryAdd) as AgentTool);
   }
   if (options.dispatch) {
     const opts = typeof options.dispatch === "object" ? options.dispatch : {};

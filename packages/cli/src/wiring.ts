@@ -36,6 +36,7 @@ import {
   createPolicyEngine,
   createToolExecutor,
   zodToJsonSchema,
+  type MemoryAddHook,
 } from "@agentx/tools";
 
 /**
@@ -117,6 +118,8 @@ export interface ToolRegistrationOptions {
   execTimeoutMs?: number;
   envAllow?: readonly string[];
   memorySearch?: (query: string, limit?: number) => Promise<string[]>;
+  /** 提供时注册 memory_add 工具（写入长期记忆）。 */
+  memoryAdd?: MemoryAddHook;
   /** dispatch_agent 的选项（含把子 agent 审批请求转给父 agent 的回调）。 */
   dispatch?: { approve?: (req: { toolName: string; summary: string }) => Promise<boolean> };
 }
@@ -136,11 +139,13 @@ export function registerTools(
 ): AgentTool[] {
   const execCfg = config?.tools.exec;
   const memorySearch = ctx.memorySearch;
+  const memoryAdd = ctx.memoryAdd;
   return createDefaultTools({
     maxOutputBytes: ctx.maxOutputBytes ?? execCfg?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
     execTimeoutMs: ctx.execTimeoutMs ?? execCfg?.defaultTimeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS,
     envAllow: ctx.envAllow ?? execCfg?.envAllow ?? [],
     ...(memorySearch ? { memorySearch } : {}),
+    ...(memoryAdd ? { memoryAdd } : {}),
     // agent 间派发：只有 tools.allow 里写了 dispatch_agent 才注册，
     // 这样默认行为不变，是否给某个 agent 派发权仍然由白名单决定。
     ...(config?.tools.allow.includes("dispatch_agent")
@@ -356,6 +361,24 @@ export function memorySearchHook(
   if (!memory) return undefined;
   return async (query: string, limit?: number) =>
     memory.search(query, limit ?? 5).map((e) => `[${e.id}] (${e.source}) ${e.text}`);
+}
+
+/**
+ * memory_add 工具钩子：把一条简短事实/偏好写入 memory.md。
+ * source 由调用方（session/task）补齐，保证每条记忆都可追溯；
+ * 体积上限与空文本校验交给 store 的 MarkdownMemory.add()。
+ */
+export function memoryAddHook(memory: MarkdownMemory | undefined): MemoryAddHook | undefined {
+  if (!memory) return undefined;
+  return async (input) => {
+    const source = input.source?.trim() || `session:${input.taskId ?? "unknown"}`;
+    const entry = memory.add({
+      text: input.text,
+      source,
+      ...(input.tags ? { tags: input.tags } : {}),
+    });
+    return `saved memory ${entry.id} (source: ${entry.source}) -> ${memory.file}`;
+  };
 }
 
 /** 技能目录：配置的 skills.dirs（相对路径按 cwd 解析）在前，内置 <repoRoot>/skills 在后。 */

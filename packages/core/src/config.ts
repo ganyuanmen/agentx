@@ -24,6 +24,7 @@ export const DEFAULT_TOOLS_ALLOW = [
   "apply_patch",
   "exec",
   "memory_search",
+  "memory_add",
 ];
 
 export const configSchema = z
