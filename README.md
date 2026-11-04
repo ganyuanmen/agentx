@@ -46,7 +46,7 @@ model provider you configure. See [Scope statement](#scope-statement).
 
 ```bash
 pnpm install
-pnpm build          # tsc -b across all packages
+pnpm build
 ```
 
 Run the CLI straight from the repo:
