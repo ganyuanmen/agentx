@@ -61,7 +61,7 @@ interface OpenAiResponse {
 
 const RETRYABLE_STATUS = (status: number): boolean => status === 429 || (status >= 500 && status <= 599);
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {

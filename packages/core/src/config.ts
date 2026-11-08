@@ -6,7 +6,7 @@ import { AgentxError, ConfigInvalidError, ErrorCode } from "./errors.js";
 
 const providerSchema = z
   .object({
-    type: z.enum(["deepseek", "openai-compatible", "mock"]),
+    type: z.enum(["deepseek", "openai-compatible", "gate", "mock"]),
     baseUrl: z.string().url().optional(),
     apiKey: z.string().optional(),
     apiKeyEnv: z.string().min(1).optional(),

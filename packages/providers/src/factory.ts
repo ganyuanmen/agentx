@@ -7,6 +7,7 @@ import {
   type ProviderConfig,
 } from "@agentx/core";
 import { createDeepseekProvider } from "./deepseek.js";
+import { GateProvider } from "./gate.js";
 import { OpenAiCompatibleProvider, type FetchLike } from "./openai-compatible.js";
 
 export interface CreateProviderOptions {
@@ -27,6 +28,23 @@ export function createProvider(def: ProviderConfig, options: CreateProviderOptio
   switch (def.type) {
     case "mock":
       return buildMock(options.mockScript);
+    case "gate": {
+      if (!def.baseUrl) {
+        throw new AgentxError(ErrorCode.CONFIG_INVALID, "providers.*.baseUrl: required for gate");
+      }
+      return new GateProvider({
+        id: "gate",
+        baseUrl: def.baseUrl,
+        apiKey: def.apiKey,
+        apiKeyEnv: def.apiKeyEnv,
+        models: def.models.map((id) => ({ id, supportsTools: true })),
+        maxRetries: def.maxRetries,
+        timeoutMs: def.timeoutMs,
+        env,
+        fetchImpl: options.fetchImpl,
+        retryBaseMs: options.retryBaseMs,
+      });
+    }
     case "deepseek":
       return createDeepseekProvider({
         baseUrl: def.baseUrl,
