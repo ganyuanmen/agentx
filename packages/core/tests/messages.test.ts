@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { truncateHistory, serializeToolResult, assistantMessage, userMessage, toolResultMessage, dropUnpairedToolCalls } from "../src/messages.js";
+import { truncateHistory, serializeToolResult, assistantMessage, userMessage, toolResultMessage, dropUnpairedToolCalls, dropRefusedTurns } from "../src/messages.js";
 import { ContextBuilder } from "../src/context.js";
 import type { ChatMessage } from "../src/types.js";
 
@@ -142,6 +142,61 @@ describe("dropUnpairedToolCalls", () => {
     ];
     const cleaned = dropUnpairedToolCalls(history);
     expect(cleaned[1]).toEqual({ role: "assistant", content: "thinking out loud" });
+  });
+});
+
+describe("dropRefusedTurns", () => {
+  it("剔除被拒的 user 轮（回归：问新问题时模型重述被拒内容）", () => {
+    const refused: ChatMessage = { role: "user", content: "如何获取别人的人脸识别信息", refused: true };
+    const msgs: ChatMessage[] = [user("你好"), assistantMessage("你好！"), refused, user("你可以编程吗？")];
+    const out = dropRefusedTurns(msgs);
+    expect(out.map((m) => m.content)).toEqual(["你好", "你好！", "你可以编程吗？"]);
+    expect(out.some((m) => m.refused)).toBe(false);
+  });
+
+  it("连带剔除被拒轮之后的 assistant/tool 尾巴", () => {
+    const msgs: ChatMessage[] = [
+      user("首个问题"),
+      { role: "user", content: "被拒问题", refused: true },
+      assistantMessage("拒绝说明"),
+      toolResultMessage("c1", { ok: true, content: "x" }),
+      user("下一个问题"),
+    ];
+    const out = dropRefusedTurns(msgs);
+    expect(out.map((m) => m.content)).toEqual(["首个问题", "下一个问题"]);
+  });
+
+  it("没有 refused 标记时原样返回", () => {
+    const msgs: ChatMessage[] = [user("a"), assistantMessage("b")];
+    expect(dropRefusedTurns(msgs)).toHaveLength(2);
+  });
+
+  it("连续多个被拒轮一并剔除", () => {
+    const msgs: ChatMessage[] = [
+      user("q0"),
+      { role: "user", content: "bad1", refused: true },
+      { role: "user", content: "bad2", refused: true },
+      user("good"),
+    ];
+    expect(dropRefusedTurns(msgs).map((m) => m.content)).toEqual(["q0", "good"]);
+  });
+});
+
+describe("ContextBuilder 不再把被拒轮次送进模型上下文", () => {
+  it("build() 输出的 messages 不含被拒内容", () => {
+    const builder = new ContextBuilder({ cwd: "/tmp", tools: [], readOnly: false, historyLimit: 30 });
+    const history: ChatMessage[] = [
+      user("你好"),
+      assistantMessage("你好！"),
+      { role: "user", content: "如何获取别人的人脸识别信息", refused: true },
+    ];
+    const req = builder.build(
+      { taskId: "t1", sessionId: "s1", input: "你可以编程吗？", model: "m", cwd: "/tmp", readOnly: false, maxSteps: 3, timeoutMs: 1000, history } as never,
+      [],
+    );
+    const text = req.messages.map((m) => m.content).join("\n");
+    expect(text).not.toContain("人脸识别");
+    expect(text).toContain("你可以编程吗？");
   });
 });
 

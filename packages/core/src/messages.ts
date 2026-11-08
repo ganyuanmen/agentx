@@ -34,6 +34,39 @@ export function toolResultMessage(callId: string, result: ToolResult): ChatMessa
 }
 
 /**
+ * 剔除被治理拒绝（refused）的轮次及其后续 assistant/tool 尾巴。
+ *
+ * 为什么需要：用户消息在任务开始时进入会话历史，若该轮被 gate 拒绝（POLICY_DENIED），
+ * 原文会留在历史里。下一轮把历史整体送给模型时，模型会把它当成「待解释的话题」
+ * 重述一遍（实测：问「你可以编程吗」时开口先讲「关于获取人脸识别信息」）。
+ * gate 侧也会把被拒请求重新送审，白白消耗审核调用。
+ *
+ * 保留在会话存储里（用户可见、审计可查），只在构建上下文时剔除。
+ */
+export function dropRefusedTurns(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  let skippingTail = false;
+  for (const msg of messages) {
+    if (!msg) continue;
+    if (msg.refused) {
+      // 被拒的 user 轮及其后的 assistant/tool 一律不进上下文；
+      // 直到下一条非 refused 的 user 消息才恢复（新一轮话题）。
+      skippingTail = true;
+      continue;
+    }
+    if (skippingTail) {
+      if (msg.role === "user") {
+        skippingTail = false;
+      } else {
+        continue;
+      }
+    }
+    out.push(msg);
+  }
+  return out;
+}
+
+/**
  * 丢弃"没有配对 tool 结果"的 assistant 工具调用轮次。
  *
  * OpenAI 兼容协议要求：assistant 发出 tool_calls 后，下一条消息必须是对应

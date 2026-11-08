@@ -8,6 +8,14 @@ export interface ChatMessage {
   content: string;
   toolCallId?: string; // role="tool" 时必填
   toolCalls?: ToolCall[]; // role="assistant" 时为模型请求的工具调用
+  /**
+   * 该消息对应的任务被治理拒绝（POLICY_DENIED）。
+   *
+   * 被拒的输入必须留在会话里（用户能看到自己问过什么、审计能对上号），但**不能**
+   * 再进入后续轮次的模型上下文：否则模型下一轮会重述被拒内容并解释为什么拒绝，
+   * 用户问的却是另一件事。gate 侧还会把它重新送审，白白消耗审核调用。
+   */
+  refused?: boolean;
 }
 export interface ToolCall {
   id: string;

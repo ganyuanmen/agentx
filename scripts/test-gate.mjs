@@ -45,7 +45,7 @@ function checkBuildFreshness() {
   // 这里直接检查 dist 是否导出了 src 里新增的符号。
   // [包, src 里应存在的符号, dist 里应存在的调用片段]
   const symbols = [
-    ["core", "dropUnpairedToolCalls", "dropUnpairedToolCalls(request.history"],
+    ["core", "dropRefusedTurns", "dropRefusedTurns(request.history"],
     ["core", "truncateHistory", "truncateHistory("],
     ["tools", "createPolicyEngine", "function createPolicyEngine"],
     ["store", "SqliteSessionStore", "class SqliteSessionStore"],

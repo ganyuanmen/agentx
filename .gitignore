@@ -3,6 +3,9 @@ packages/*/dist/
 dist-release/
 *.tsbuildinfo
 *.log
+# Session transcripts pasted in for debugging; not project source.
+log.txt
+log-agent.txt
 .DS_Store
 local_cli_agent_framework_dev_spec.md 
 docs/

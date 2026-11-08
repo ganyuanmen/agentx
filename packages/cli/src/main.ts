@@ -921,11 +921,9 @@ async function runTurn(
       prep.logger.warn("task.finish.failed", { taskId, message: (finishErr as Error).message });
     }
     if (!emit) {
-      // 调用方（chat TUI / 管道）自行渲染结果；这里只把错误摘要送到 stderr，
-      // 绝不能重复写 stdout，否则管道会拿到两份答案。
-      if (result.status !== "succeeded" && result.errorSummary) {
-        ctx.stderr.write(`agentx: ${result.errorSummary}\n`);
-      }
+      // 只有 chat TUI 会走到这里（run 命令用 emit=true，走下面的 else 分支自行渲染）。
+      // chat 在自己的失败分支里打印 errorSummary，此处再打印会让同一句拒绝理由
+      // 在终端出现两遍（实测复现）。所以这里不做任何输出：渲染责任完全归调用方。
     } else if (json) {
       const payload = {
         taskId: result.taskId,

@@ -1,5 +1,5 @@
 import type { AgentRequest, ChatMessage, ModelRequest, ToolSpec } from "./types.js";
-import { systemMessage, truncateHistory, userMessage, dropUnpairedToolCalls } from "./messages.js";
+import { systemMessage, truncateHistory, userMessage, dropUnpairedToolCalls, dropRefusedTurns } from "./messages.js";
 
 export interface SkillContent {
   name: string;
@@ -53,10 +53,11 @@ export class ContextBuilder {
   build(request: AgentRequest, turn: ChatMessage[] = []): ModelRequest {
     const system = this.buildSystemPrompt(request);
     const messages: ChatMessage[] = [systemMessage(system)];
-    // 先清理未配对的 tool_calls（审批拒绝/取消/超时会留下它们），再截断。
-    // 顺序很重要：先清理才能保证截断后的窗口也是协议合法的。
+    // 先剔除被治理拒绝的轮次，再清理未配对的 tool_calls，最后截断。
+    // 被拒输入必须留在会话记录里（用户可见、可审计），但不能进入模型上下文：
+    // 否则下一轮模型会把被拒问题当成待处理话题重述一遍，而用户问的是别的事。
     const history = truncateHistory(
-      dropUnpairedToolCalls(request.history ?? []),
+      dropUnpairedToolCalls(dropRefusedTurns(request.history ?? [])),
       this.historyLimit,
     );
     messages.push(...history);

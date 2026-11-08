@@ -63,7 +63,7 @@ export function openDatabase(file: string): SqliteDatabase {
 }
 
 /** 当前 schema 版本。 */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -120,6 +120,13 @@ const MIGRATIONS: Record<number, string> = {
     CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
     CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id, started_at);
     CREATE INDEX IF NOT EXISTS idx_tool_calls_task ON tool_calls(task_id);
+  `,
+  // v2: mark turns whose task was refused by governance.
+  // Default 0 so existing rows stay valid; readers treat non-zero as "refused".
+  // Kept in the row (not deleted) because the transcript must still show what the
+  // user asked, while context building skips refused turns.
+  2: `
+    ALTER TABLE messages ADD COLUMN refused INTEGER NOT NULL DEFAULT 0;
   `,
 };
 

@@ -108,7 +108,7 @@ export class SqliteSessionStore implements SessionStoreLike {
     const toolCalls = message.toolCalls;
     this.db
       .prepare(
-        "INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls_json, tool_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls_json, tool_name, refused, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         sessionId,
@@ -117,6 +117,7 @@ export class SqliteSessionStore implements SessionStoreLike {
         message.toolCallId ?? null,
         toolCalls && toolCalls.length > 0 ? JSON.stringify(toolCalls) : null,
         message.role === "tool" ? (message as ChatMessage & { name?: string }).name ?? null : null,
+        message.refused ? 1 : 0,
         nowIso(),
       );
     // 首条 user 消息落库后补标题（未命名会话）。
@@ -137,7 +138,7 @@ export class SqliteSessionStore implements SessionStoreLike {
   getMessages(sessionId: string): ChatMessage[] {
     const rows = this.db
       .prepare(
-        "SELECT role, content, tool_call_id, tool_calls_json FROM messages WHERE session_id = ? ORDER BY id ASC",
+        "SELECT role, content, tool_call_id, tool_calls_json, refused FROM messages WHERE session_id = ? ORDER BY id ASC",
       )
       .all(sessionId);
     return rows.map((row) => {
@@ -145,6 +146,8 @@ export class SqliteSessionStore implements SessionStoreLike {
         role: str(row["role"]) as ChatMessage["role"],
         content: str(row["content"]) ?? "",
       };
+      // 被治理拒绝的轮次：历史里保留（用户看得到），但上下文构建会剔除。
+      if (Number(row["refused"] ?? 0) !== 0) msg.refused = true;
       const toolCallId = str(row["tool_call_id"]);
       if (toolCallId !== undefined) msg.toolCallId = toolCallId;
       const rawCalls = str(row["tool_calls_json"]);

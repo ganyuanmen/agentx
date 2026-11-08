@@ -380,7 +380,10 @@ export class GateProvider implements ModelProvider {
     if (signal?.aborted) throw new TaskCancelledError();
 
     const toolNames = req.tools.map((t) => t.name);
-    const messages = encodeMessages(req.messages);
+    // 双保险：即使上游上下文未剔除，也不把被拒轮次送去审核/生成。
+    // 被拒内容一旦回到 gate，会再次触发 request 审核（浪费审核调用），
+    // 并让模型把被拒问题当成待解释的话题重述。
+    const messages = encodeMessages(req.messages.filter((m) => !m.refused));
     if (req.tools.length > 0) {
       messages.unshift({ role: "system", content: buildToolProtocolPrompt(req.tools) });
     }

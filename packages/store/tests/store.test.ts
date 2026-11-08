@@ -34,6 +34,33 @@ describe("schema migration", () => {
     expect(v2.user_version).toBe(v1.user_version);
   });
 
+  it("v2 adds messages.refused so refused turns survive a reload", () => {
+    const store = new SqliteSessionStore(fresh());
+    store.ensureSession("ses_refused", "/w");
+    store.appendMessage("ses_refused", { role: "user", content: "bad ask", refused: true });
+    store.appendMessage("ses_refused", { role: "user", content: "good ask" });
+
+    const history = store.getHistory("ses_refused");
+    expect(history[0]?.refused).toBe(true);
+    expect(history[1]?.refused).toBeUndefined();
+  });
+
+  it("upgrading a v1 database keeps existing rows", () => {
+    // 模拟旧库：只跑到 v1，写入数据，再跑完整迁移。
+    const db = openDatabase(dbFile);
+    db.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, cwd TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+    db.exec("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, tool_call_id TEXT, tool_calls_json TEXT, tool_name TEXT, created_at TEXT NOT NULL)");
+    db.exec("PRAGMA user_version = 1");
+    db.prepare("INSERT INTO sessions (id,title,cwd,created_at,updated_at) VALUES (?,?,?,?,?)").run("ses_old", "t", "/w", "now", "now");
+    db.prepare("INSERT INTO messages (session_id,role,content,created_at) VALUES (?,?,?,?)").run("ses_old", "user", "旧消息", "now");
+
+    migrate(db);
+    const store = new SqliteSessionStore(db);
+    const history = store.getHistory("ses_old");
+    expect(history.map((m) => m.content)).toEqual(["旧消息"]);
+    expect(history[0]?.refused).toBeUndefined();
+  });
+
   it("survives a process restart: data written before close is readable after", () => {
     const store = new SqliteSessionStore(fresh());
     store.ensureSession("ses_persist", "/w");

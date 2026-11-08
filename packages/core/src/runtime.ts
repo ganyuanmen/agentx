@@ -178,7 +178,6 @@ export class AgentRuntime {
     });
 
     const userMsg: import("./types.js").ChatMessage = { role: "user", content: request.input };
-    await this.sessionStore.appendMessage(request.sessionId, userMsg);
 
     await this.taskStore.updateStatus(request.taskId, "running");
     this.logger.info("task.created", { taskId: request.taskId, sessionId: request.sessionId });
@@ -229,12 +228,22 @@ export class AgentRuntime {
       throw new AgentxError(ErrorCode.INTERNAL, `agent loop crashed: ${message}`, { cause: err });
     }
 
+    // 用户消息在拿到结果后才落库：被治理拒绝的输入要打上 refused 标记，
+    // 否则它会作为普通历史进入下一轮上下文，让模型重述被拒内容（见 ChatMessage.refused）。
+    const refused = result.errorCode === ErrorCode.POLICY_DENIED;
+    if (refused) userMsg.refused = true;
+    await this.sessionStore.appendMessage(request.sessionId, userMsg);
+
     // result.messages 的首条就是本次的 user 输入（已在上面写入过一次），
     // 从第 2 条开始才是本轮新增的 assistant / tool 消息，必须去重后再落库。
     const newMessages = result.messages.filter(
       (msg, idx) => !(idx === 0 && msg.role === "user" && msg.content === request.input),
     );
     for (const msg of newMessages) {
+      // 被拒轮的全部产出同样打标记：拒绝轮会带回一条 assistant 文本（gate 的拒绝理由，
+      // 或模型对被拒话题的解释）。它若以普通消息落库，下一轮会作为正常历史进入上下文，
+      // 模型于是继续围绕被拒话题作答 —— 实测这正是「问新问题却先讲上一个被拒问题」的成因。
+      if (refused) msg.refused = true;
       await this.sessionStore.appendMessage(request.sessionId, msg);
     }
     await this.taskStore.updateStatus(request.taskId, result.status, {
