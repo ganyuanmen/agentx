@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ErrorCode, type ChatMessage, type ModelRequest } from "@agentx/core";
 import {
   GateProvider,
+  NeedMoreInfoError,
   buildToolProtocolPrompt,
   encodeMessages,
   parseToolReply,
@@ -270,6 +271,90 @@ describe("GateProvider.generate", () => {
       },
     });
     await expect(p.generate(req([{ role: "user", content: "x" }]))).rejects.toThrow(/POL_REJECTED|gate rejected/);
+    expect(calls).toBe(1);
+  });
+
+  // 门禁结论 5（PM_SPEC_SIX_STATE §6.3）：HTTP 200 + success:false + POL_NEED_MORE_INFO。
+  function needMoreInfoBody(detail: unknown, message = "为完成 PoL 治理审核，需要你补充以下信息：...") {
+    return {
+      success: false,
+      request_id: "req_more_info",
+      error: { code: "POL_NEED_MORE_INFO", message, detail },
+    };
+  }
+
+  it("POL_NEED_MORE_INFO -> NEED_MORE_INFO 且不可重试、questions 透传", async () => {
+    const questions = ["你要处理的是哪个文件？", "期望的输出格式是什么？"];
+    const p = new GateProvider({
+      id: "gate",
+      baseUrl: "http://127.0.0.1:3000",
+      models: [{ id: "gate-chat", supportsTools: true }],
+      maxRetries: 2,
+      fetchImpl: gateReply(needMoreInfoBody({ result_code: 5, questions })),
+    });
+    const err = await p.generate(req([{ role: "user", content: "帮我改一下" }])).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(NeedMoreInfoError);
+    expect((err as NeedMoreInfoError).code).toBe(ErrorCode.NEED_MORE_INFO);
+    // 追问永远不可重试：重试只会拿到同一个追问。
+    expect((err as NeedMoreInfoError).retryable).toBe(false);
+    expect((err as NeedMoreInfoError).detail).toMatchObject({
+      gateCode: "POL_NEED_MORE_INFO",
+      requestId: "req_more_info",
+      resultCode: 5,
+    });
+    // questions 必须原样透传（供 CLI 打印）。
+    expect(((err as NeedMoreInfoError).detail as { questions: string[] }).questions).toEqual(questions);
+  });
+
+  it("questions 非数组时降级为 []", async () => {
+    const p = new GateProvider({
+      id: "gate",
+      baseUrl: "http://127.0.0.1:3000",
+      models: [{ id: "gate-chat", supportsTools: true }],
+      fetchImpl: gateReply(needMoreInfoBody({ result_code: 5, questions: "只要一个文件吗？" })),
+    });
+    const err = await p.generate(req([{ role: "user", content: "x" }])).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(NeedMoreInfoError);
+    expect(((err as NeedMoreInfoError).detail as { questions: string[] }).questions).toEqual([]);
+  });
+
+  it("questions 里混入非字符串/空串时被过滤", async () => {
+    const p = new GateProvider({
+      id: "gate",
+      baseUrl: "http://127.0.0.1:3000",
+      models: [{ id: "gate-chat", supportsTools: true }],
+      fetchImpl: gateReply(needMoreInfoBody({ result_code: 5, questions: ["a", "", 3, null, "b"] })),
+    });
+    const err = await p.generate(req([{ role: "user", content: "x" }])).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(((err as NeedMoreInfoError).detail as { questions: string[] }).questions).toEqual(["a", "b"]);
+  });
+
+  it("maxRetries>0 时 NEED_MORE_INFO 不会被重试", async () => {
+    let calls = 0;
+    const p = new GateProvider({
+      id: "gate",
+      baseUrl: "http://127.0.0.1:3000",
+      models: [{ id: "gate-chat", supportsTools: true }],
+      maxRetries: 3,
+      retryBaseMs: 1,
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response(JSON.stringify(needMoreInfoBody({ result_code: 5, questions: ["q1"] })), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    await expect(p.generate(req([{ role: "user", content: "x" }]))).rejects.toBeInstanceOf(NeedMoreInfoError);
     expect(calls).toBe(1);
   });
 

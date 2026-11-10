@@ -10,6 +10,8 @@ import {
   createLogger,
   AgentRuntime,
   ErrorCode,
+  NeedMoreInfoError,
+  dropRefusedTurns,
   type AgentRequest,
   type AgentTool,
   type AgentxError,
@@ -498,5 +500,64 @@ describe("AgentRuntime", () => {
     const task = tasks.tasks.get("task_fail");
     expect(task?.status).toBe("failed");
     expect(task?.errorCode).toBe(ErrorCode.UNKNOWN_TOOL);
+  });
+
+  // 门禁结论 5（PM_SPEC_SIX_STATE §8.4 / AC8）：
+  // 落库时 userMsg.needMoreInfo=true、refused 不为 true；终止原因 policy_denied；
+  // 且上下文构建不会把这一轮剔除（否则用户补充信息接不上）。
+  it("NEED_MORE_INFO 落库为 needMoreInfo（不是 refused），且上下文保留该轮", async () => {
+    const sessions = new InMemorySessionStore();
+    const tasks = new InMemoryTaskStore();
+    const needInfo = new NeedMoreInfoError("gate needs more info: 需要你补充：哪个文件？", {
+      detail: { gateCode: "POL_NEED_MORE_INFO", resultCode: 5, questions: ["哪个文件？"] },
+    });
+    const runtime = new AgentRuntime({
+      sessionStore: sessions,
+      taskStore: tasks,
+      logger: silentLogger,
+      run: async (): Promise<import("../src/index.js").AgentResult> => ({
+        taskId: "task_need_info",
+        sessionId: "ses_need_info",
+        status: "failed",
+        terminationReason: "policy_denied",
+        finalText: "",
+        steps: 1,
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        messages: [
+          { role: "user", content: "帮我改一下" },
+          { role: "assistant", content: "需要你补充：哪个文件？" },
+        ],
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        durationMs: 1,
+        errorCode: needInfo.code,
+        errorSummary: needInfo.message,
+      }),
+    });
+
+    const result = await runtime.run({
+      taskId: "task_need_info", sessionId: "ses_need_info", input: "帮我改一下", cwd: process.cwd(),
+      model: "mock-1", maxSteps: 3, timeoutMs: 5000, readOnly: false,
+    });
+    expect(result.status).toBe("failed");
+    expect(result.errorCode).toBe(ErrorCode.NEED_MORE_INFO);
+    expect(result.terminationReason).toBe("policy_denied");
+
+    const msgs = sessions.getHistory("ses_need_info");
+    const user = msgs.find((m) => m.role === "user")!;
+    expect(user.needMoreInfo).toBe(true);
+    expect(user.refused).not.toBe(true);
+    // 本轮 assistant 追问文本同样只打 needMoreInfo。
+    const assistant = msgs.find((m) => m.role === "assistant")!;
+    expect(assistant.needMoreInfo).toBe(true);
+    expect(assistant.refused).not.toBe(true);
+
+    // 上下文构建：追问轮必须保留（对照组：标 refused 的轮次会被剔除）。
+    const kept = dropRefusedTurns(msgs);
+    expect(kept.map((m) => m.content)).toEqual(["帮我改一下", "需要你补充：哪个文件？"]);
+
+    const task = tasks.tasks.get("task_need_info");
+    expect(task?.errorCode).toBe(ErrorCode.NEED_MORE_INFO);
+    expect(task?.terminationReason).toBe("policy_denied");
   });
 });

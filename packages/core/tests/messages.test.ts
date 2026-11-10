@@ -180,6 +180,33 @@ describe("dropRefusedTurns", () => {
     ];
     expect(dropRefusedTurns(msgs).map((m) => m.content)).toEqual(["q0", "good"]);
   });
+
+  // 结论 5（追问）不是拒绝：needMoreInfo 轮必须原样保留，用户补充的信息才能接上前文。
+  it("needMoreInfo 轮次不被剔除（追问上下文必须保留）", () => {
+    const msgs: ChatMessage[] = [
+      user("帮我改一下配置"),
+      { role: "user", content: "帮我改一下配置", needMoreInfo: true },
+      { role: "assistant", content: "需要你补充：哪个文件？", needMoreInfo: true },
+      user("config/app.yaml"),
+    ];
+    const out = dropRefusedTurns(msgs);
+    expect(out.map((m) => m.content)).toEqual([
+      "帮我改一下配置",
+      "帮我改一下配置",
+      "需要你补充：哪个文件？",
+      "config/app.yaml",
+    ]);
+  });
+
+  it("needMoreInfo 与 refused 同时出现时以 refused 为准（互斥兜底）", () => {
+    // 正常路径不会同时打两个标记；若未来有人误标，仍按拒绝剔除，避免被拒内容回到模型。
+    const msgs: ChatMessage[] = [
+      user("q0"),
+      { role: "user", content: "bad", needMoreInfo: true, refused: true },
+      user("good"),
+    ];
+    expect(dropRefusedTurns(msgs).map((m) => m.content)).toEqual(["q0", "good"]);
+  });
 });
 
 describe("ContextBuilder 不再把被拒轮次送进模型上下文", () => {

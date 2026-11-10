@@ -2,6 +2,8 @@ export const ErrorCode = {
   UNKNOWN_TOOL: "UNKNOWN_TOOL",
   INVALID_TOOL_ARGS: "INVALID_TOOL_ARGS",
   POLICY_DENIED: "POLICY_DENIED",
+  /** 门禁结论 5：需要用户补充信息（追问，不是拒绝）。 */
+  NEED_MORE_INFO: "NEED_MORE_INFO",
   READ_ONLY_VIOLATION: "READ_ONLY_VIOLATION",
   APPROVAL_REQUIRED: "APPROVAL_REQUIRED",
   PATH_ESCAPE: "PATH_ESCAPE",
@@ -86,6 +88,22 @@ export class InvalidToolArgsError extends AgentxError {
 export class PolicyDeniedError extends AgentxError {
   constructor(message = "tool call denied by policy", options: AgentxErrorOptions = {}) {
     super(ErrorCode.POLICY_DENIED, message, options);
+  }
+}
+
+/**
+ * 门禁结论 5：需要用户补充信息。
+ *
+ * 语义与 POLICY_DENIED 完全不同 —— 这不是拒绝，而是「请用户补充信息后继续」。
+ * 因此：
+ *   - **永远不可重试**（重试只会拿到同一个追问）；
+ *   - 该轮上下文必须保留（runtime 只打 ChatMessage.needMoreInfo，绝不打 refused），
+ *     否则用户补充的信息接不上前文。
+ * `retryable: false` 写在展开之前，调用方即使漏传 / 误传也能被强制为 false。
+ */
+export class NeedMoreInfoError extends AgentxError {
+  constructor(message: string, options: AgentxErrorOptions = {}) {
+    super(ErrorCode.NEED_MORE_INFO, message, { retryable: false, ...options });
   }
 }
 

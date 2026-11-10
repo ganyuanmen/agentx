@@ -1,6 +1,7 @@
 import {
   AgentxError,
   ErrorCode,
+  NeedMoreInfoError,
   ProviderBadResponseError,
   ProviderFailedError,
   TaskCancelledError,
@@ -13,6 +14,9 @@ import {
   type ToolCall,
 } from "@agentx/core";
 import { sleep, type FetchLike } from "./openai-compatible.js";
+
+// 再导出，方便 CLI 侧 `instanceof NeedMoreInfoError` 或读 code 而不必另引 @agentx/core。
+export { NeedMoreInfoError };
 
 /**
  * gate-service provider —— 让每一轮 agent 模型调用都经过本地 PoL 治理门禁。
@@ -50,7 +54,12 @@ export interface GateOptions {
 interface GateResponse {
   success?: boolean;
   data?: { content?: string; source?: string; audit?: unknown; knowledge_id?: string | null };
-  error?: { code?: string; message?: string };
+  error?: {
+    code?: string;
+    message?: string;
+    /** 结论明细。结论 5 带 `result_code:5` + `questions`；旧门禁可能不带。 */
+    detail?: { result_code?: number; questions?: string[] };
+  };
   request_id?: string | null;
 }
 
@@ -329,6 +338,24 @@ function toAgentxError(
   const code = payload.error?.code;
   if (!code) return undefined;
   const message = payload.error?.message ?? "gate rejected the request";
+  // 结论 5：需要用户补充信息（追问，不是拒绝）。不可重试。
+  //
+  // 顺序很重要：结论 5 的响应体是 `success:false` + `error.code='POL_NEED_MORE_INFO'`，
+  // 而 attempt() 里 `const failure = toAgentxError(...)` 在 `payload.success === false`
+  // 检查**之前**执行，所以只要这里匹配到就会先抛 NeedMoreInfoError。
+  // 一旦有人把两段顺序调换，结论 5 会落进 "success=false without error code" 的
+  // PROVIDER_FAILED 分支，追问被当成故障 —— 因此 attempt() 里必须保持本函数先调用。
+  if (code === "POL_NEED_MORE_INFO") {
+    // questions 必须宽松解析：门禁/旧版本可能给字符串、null 或混入空串。
+    const raw = payload.error?.detail?.questions;
+    const questions = Array.isArray(raw)
+      ? raw.filter((q): q is string => typeof q === "string" && q.trim() !== "")
+      : [];
+    return new NeedMoreInfoError(`gate needs more info: ${message}`, {
+      retryable: false,
+      detail: { gateCode: code, requestId, resultCode: 5, questions },
+    });
+  }
   // POL_REJECTED 是业务裁决（治理生效），不可重试。
   if (code === "POL_REJECTED") {
     return new AgentxError(ErrorCode.POLICY_DENIED, `gate rejected: ${message}`, {
@@ -493,6 +520,9 @@ export class GateProvider implements ModelProvider {
     }
 
     const requestId = payload.request_id ?? null;
+    // 注意顺序：先 toAgentxError，再判 payload.success === false。
+    // 结论 5（POL_NEED_MORE_INFO）也是 success:false，但它带 error.code，
+    // 必须在下面这段之前被翻译成 NeedMoreInfoError，否则会被当成 "without error code" 的故障。
     const failure = toAgentxError(this.id, payload, requestId);
     if (failure) throw failure;
     if (payload.success === false) {

@@ -16,6 +16,15 @@ export interface ChatMessage {
    * 用户问的却是另一件事。gate 侧还会把它重新送审，白白消耗审核调用。
    */
   refused?: boolean;
+  /**
+   * 该轮门禁要求用户补充信息（结论 5，NEED_MORE_INFO）—— **不是**被拒绝。
+   *
+   * 带此标记的轮次**必须保留在上下文里**（不能被 dropRefusedTurns/refused 剔除），
+   * 否则用户回答追问后模型接不上：它看不到自己问过什么，回答会被当成新话题的开场。
+   * 与 `refused` 互斥语义：refused 表示内容被裁决拦截、不得再入上下文；
+   * needMoreInfo 表示这一轮需要用户继续输入，上下文必须续接。
+   */
+  needMoreInfo?: boolean;
 }
 export interface ToolCall {
   id: string;

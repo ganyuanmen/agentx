@@ -232,6 +232,10 @@ export class AgentRuntime {
     // 否则它会作为普通历史进入下一轮上下文，让模型重述被拒内容（见 ChatMessage.refused）。
     const refused = result.errorCode === ErrorCode.POLICY_DENIED;
     if (refused) userMsg.refused = true;
+    // 结论 5 是「追问」不是「拒绝」：只打 needMoreInfo，绝不能打 refused，
+    // 否则该轮会被 dropRefusedTurns 剔除，用户补充的信息接不上前文。
+    const needMoreInfo = result.errorCode === ErrorCode.NEED_MORE_INFO;
+    if (needMoreInfo) userMsg.needMoreInfo = true;
     await this.sessionStore.appendMessage(request.sessionId, userMsg);
 
     // result.messages 的首条就是本次的 user 输入（已在上面写入过一次），
@@ -244,6 +248,8 @@ export class AgentRuntime {
       // 或模型对被拒话题的解释）。它若以普通消息落库，下一轮会作为正常历史进入上下文，
       // 模型于是继续围绕被拒话题作答 —— 实测这正是「问新问题却先讲上一个被拒问题」的成因。
       if (refused) msg.refused = true;
+      // 追问轮同样要保留在上下文（见 ChatMessage.needMoreInfo），且绝不标 refused。
+      if (needMoreInfo) msg.needMoreInfo = true;
       await this.sessionStore.appendMessage(request.sessionId, msg);
     }
     await this.taskStore.updateStatus(request.taskId, result.status, {

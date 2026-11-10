@@ -149,6 +149,7 @@ const STATUS_BY_CODE: Partial<Record<ErrorCode, "failed" | "cancelled" | "timed_
   [ErrorCode.UNKNOWN_TOOL]: "failed",
   [ErrorCode.INVALID_TOOL_ARGS]: "failed",
   [ErrorCode.POLICY_DENIED]: "failed",
+  [ErrorCode.NEED_MORE_INFO]: "failed",
   [ErrorCode.READ_ONLY_VIOLATION]: "failed",
   [ErrorCode.APPROVAL_REQUIRED]: "failed",
   [ErrorCode.TOOL_LIMIT_EXCEEDED]: "failed",
@@ -163,6 +164,12 @@ const REASON_BY_CODE: Partial<Record<ErrorCode, TerminationReason>> = {
   [ErrorCode.MAX_STEPS_EXCEEDED]: "max_steps",
   [ErrorCode.BUDGET_EXCEEDED]: "budget_exceeded",
   [ErrorCode.POLICY_DENIED]: "policy_denied",
+  // 结论 5（追问）复用 policy_denied，而不是新增 termination reason：
+  // 本次任务确实以非成功结束（规格第 8 节第 3 条），它与拒绝共享「治理环节拦下了这一轮」
+  // 的运维语义；新增 reason 会扩散到任务表 CHECK、CLI 展示与所有既有消费方，
+  // 收益却只是把两种「治理中止」拆得更细。区分「拒绝 vs 追问」由 errorCode
+  // （POLICY_DENIED vs NEED_MORE_INFO）承担，terminationReason 只表达终止分类。
+  [ErrorCode.NEED_MORE_INFO]: "policy_denied",
   [ErrorCode.READ_ONLY_VIOLATION]: "policy_denied",
   [ErrorCode.APPROVAL_REQUIRED]: "policy_denied",
   [ErrorCode.PROVIDER_FAILED]: "provider_failed",
