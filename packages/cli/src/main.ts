@@ -527,6 +527,26 @@ export function exitCodeForResult(result: AgentResult): number {
   return EXIT.FAILURE;
 }
 
+/**
+ * 取出「需要用户补充信息」的正文。
+ *
+ * errorSummary 来自 NeedMoreInfoError 的 message，形如
+ *   `gate needs more info: 为完成 PoL 治理审核，需要你补充以下信息：…`
+ * provider 前缀是给日志/调试用的（能看出是哪一层拒绝的），展示给用户时要去掉——
+ * 用户要读的是门禁自己写的那句话，前面挂个英文 `gate needs more info:` 只会让人以为出错。
+ * 门禁若没给正文（旧版本），回退到一句固定提示，而不是把空行打出来。
+ */
+export function needMoreInfoText(errorSummary: string | undefined): string {
+  const raw = (errorSummary ?? "").trim();
+  // 两种历史形态都要吃得下：
+  //   `gate needs more info: …`            （当前 provider 的 message）
+  //   `gate "gate" needs more info: …`     （带 provider id 的早期写法）
+  // 只削前缀，不碰正文——正文里的半角冒号、引号都必须原样保留给用户看。
+  const prefix = /^gate(?:\s+"[^"]*")?\s+(?:needs more info|error POL_NEED_MORE_INFO)\s*:\s*/i;
+  const body = raw.replace(prefix, "").trim();
+  return body.length > 0 ? body : "为完成 PoL 治理审核，需要你补充更多信息。";
+}
+
 // ---------- 共享接线 ----------
 
 interface PreparedRuntime {
@@ -940,6 +960,9 @@ async function runTurn(
       ctx.stdout.write(`${JSON.stringify(payload)}\n`);
     } else if (result.status === "succeeded") {
       ctx.stdout.write(result.finalText.endsWith("\n") ? result.finalText : `${result.finalText}\n`);
+    } else if (result.errorCode === ErrorCode.NEED_MORE_INFO) {
+      // 追问不是失败：不打印 `task failed (...)` 那一行，只给正文（与 chat 口径一致）。
+      ctx.stderr.write(`agentx: ${needMoreInfoText(result.errorSummary)}\n`);
     } else {
       ctx.stderr.write(
         `agentx: task ${result.status} (${result.terminationReason}${result.errorCode ? `, ${result.errorCode}` : ""})\n`,
@@ -1248,13 +1271,26 @@ export async function executeChat(options: ChatOptions, ctx: RunContext): Promis
         // 管道模式：只输出答案本身，保持 `agentx chat | ...` 可用
         if (result.status === "succeeded") {
           ctx.stdout.write(result.finalText.endsWith("\n") ? result.finalText : `${result.finalText}\n`);
+        } else if (result.errorCode === ErrorCode.NEED_MORE_INFO) {
+          // 追问正文按同一口径输出：去掉 provider 前缀，与交互模式一致。
+          ctx.stderr.write(`agentx: ${needMoreInfoText(result.errorSummary)}\n`);
         } else if (result.errorSummary) {
           ctx.stderr.write(`agentx: ${result.errorSummary}\n`);
         }
       } else {
         // Hermes 版式：回答 → 分隔线 → 状态栏 → 分隔线。
         // 状态栏是每轮的常驻底栏，所以两条 rule 把「最后一次回答」和「下一次输入」隔开。
-        if (result.status === "succeeded") {
+        //
+        // NEED_MORE_INFO 是唯一不走「failed + 状态栏」的终态：它不是失败，而是门禁在
+        // 向用户追问。用户实测反馈，把这句追问夹在
+        //   `failed policy_denied NEED_MORE_INFO`
+        //   `✗ NEED_MORE_INFO`
+        // 之间会被读成「服务坏了」，而真正要看的只有那句「需要你补充以下信息：…」。
+        // 所以这里只打印追问正文（去掉 provider 前缀、去掉状态行、状态栏不带 ✗），
+        // 其余失败分支（含 policy_denied 拒绝）保持原样。
+        if (result.errorCode === ErrorCode.NEED_MORE_INFO) {
+          ctx.stderr.write(`${ui.badge("muted", "需要补充信息")} ${needMoreInfoText(result.errorSummary)}\n`);
+        } else if (result.status === "succeeded") {
           ctx.stdout.write(`${ui.assistantLine(result.finalText)}\n`);
         } else {
           ctx.stdout.write(
@@ -1281,7 +1317,11 @@ export async function executeChat(options: ChatOptions, ctx: RunContext): Promis
             turnMs: result.durationMs,
             sessionMs,
             steps: result.steps,
-            ...(result.status !== "succeeded" && result.errorCode ? { errorCode: result.errorCode } : {}),
+            // NEED_MORE_INFO 不进状态栏：这个终态不是失败，追问正文已经单独打印过，
+            // 再在底栏挂一个红色 ✗ NEED_MORE_INFO 会让用户以为任务出错了。
+            ...(result.status !== "succeeded" && result.errorCode && result.errorCode !== ErrorCode.NEED_MORE_INFO
+              ? { errorCode: result.errorCode }
+              : {}),
           })}\n`,
         );
         ctx.stdout.write(`${ui.rule()}\n`);
